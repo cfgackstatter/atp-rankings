@@ -1,6 +1,6 @@
 # ATP Rankings Visualization Tool
 
-![ATP Rankings Visualization Example](assets/example_chart_alcaraz_sinner.png)
+![Header Imaege](assets/header_image.png)
 
 A web-based interactive dashboard for exploring historical ATP tennis player rankings from the 1970s to the present.  
 Built with [Dash](https://dash.plotly.com/) and powered by [Jeff Sackmann's tennis_atp dataset](https://github.com/JeffSackmann/tennis_atp).
