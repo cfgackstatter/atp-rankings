@@ -1,0 +1,45 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Data cache and large files
+data/cache/
+*.parquet
+*.h5
+*.zip
+*.csv
+
+# IDE/project files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Environment/config files
+.env
+.env.local
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# Node.js (if using npm for frontend)
+node_modules/
+npm-debug.log
