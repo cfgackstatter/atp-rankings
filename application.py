@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from dash.exceptions import PreventUpdate
 
 # Import data loading functions
-from src.data_loader import load_players, load_rankings, reduce_mem_usage
+from src.data_loader import load_players, load_rankings
 
 # Initialize the Dash app
 app = dash.Dash(__name__,
@@ -71,44 +71,57 @@ player_options = generate_player_options(players_df)
 
 # App layout
 app.layout = html.Div([
-    # Header section
+    # Compact header with logo
     html.Div([
-        html.H1("ATP Rankings Chart", style={'textAlign': 'center'}),
-        html.P("Explore historical ATP tennis rankings data from 1970s to present",
-               style={'textAlign': 'center', 'color': '#666'})
-    ], className="header-container"),
-    
-    # Controls section (left-aligned for F-pattern visibility)
-    html.Div([
+        # Left side: Logo and title in a row
         html.Div([
-            # Player selection
-            html.Div([
-                html.Label("Select Players:", className="control-label"),
-                dcc.Dropdown(
-                    id='player-dropdown',
-                    options=player_options,
-                    multi=True,
-                    placeholder="Type to search for players...",
-                    className="player-dropdown"
-                ),
-            ], className="control-group"),
-            
-            # X-Axis toggle
-            html.Div([
-                html.Label("X-Axis:", className="control-label"),
-                dcc.RadioItems(
-                    id='x-axis-toggle',
-                    options=[
-                        {'label': 'Date', 'value': 'date'},
-                        {'label': 'Age', 'value': 'age'}
-                    ],
-                    value='date',
-                    labelStyle={'display': 'inline-block', 'marginRight': '10px'},
-                    className="radio-group"
-                ),
-            ], className="control-group"),
-        ], className="controls-container"),
+            # Logo placeholder
+            html.Img(src='/assets/logo.svg', height=40, style={'marginRight': '15px'}),
+            # Title next to logo, not above content
+            html.H1("ATP RankTracker", style={'margin': '0', 'fontSize': '24px'})
+        ], style={'display': 'flex', 'alignItems': 'center'}),
 
+        # Right side: X-Axis toggle
+        html.Div([
+            # X-Axis toggle in header
+            html.Label("X-Axis:", className="control-label-inline"),
+            dcc.RadioItems(
+                id='x-axis-toggle',
+                options=[
+                    {'label': 'Date', 'value': 'date'},
+                    {'label': 'Age', 'value': 'age'}
+                ],
+                value='date',
+                labelStyle={'display': 'inline-block', 'marginRight': '10px'},
+                className="radio-group-inline"
+            ),
+        ], style={'marginLeft': 'auto'})
+    ], className="header-container-compact", style={
+        'display': 'flex', 
+        'justifyContent': 'space-between',
+        'alignItems': 'center',
+        'padding': '10px 20px',
+        'borderBottom': '1px solid #eaeaea',
+        'backgroundColor': 'white',
+        'position': 'sticky',
+        'top': 0,
+        'zIndex': 1000
+    }),
+    
+    # Main content
+    html.Div([
+        # Player selection
+        html.Div([
+            html.Label("Select Players:", className="control-label"),
+            dcc.Dropdown(
+                id='player-dropdown',
+                options=player_options,
+                multi=True,
+                placeholder="Type to search for players...",
+                className="player-dropdown"
+            ),
+        ], className="player-selection"),
+        
         # Chart container
         html.Div([
             dcc.Loading(
@@ -118,29 +131,25 @@ app.layout = html.Div([
             ),
         ], className="chart-container"),
 
-        # Messages and feedback
-        html.Div(id='output-message', className="message-container"),
+        # Footer   
+        html.Footer([
+            html.P([
+                "Data: ",
+                html.A(
+                    "Jeff Sackmann's tennis_atp", 
+                    href="https://github.com/JeffSackmann/tennis_atp", 
+                    target="_blank",
+                    rel="noopener noreferrer"
+                ),
+                " | License: CC BY-NC-SA 4.0"
+            ], style={'fontSize': '0.8rem', 'margin': '5px 0'}),
+        ], className="footer")
     ], className="main-content"),
-
-    # Footer   
-    html.Footer([
-        html.P([
-            "Data source: ",
-            html.A(
-                "Jeff Sackmann's tennis_atp repository", 
-                href="https://github.com/JeffSackmann/tennis_atp", 
-                target="_blank",
-                rel="noopener noreferrer"
-            )
-        ]),
-        html.P("License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License")
-    ], className="footer")
 ], className="container")
 
 
 @app.callback(
-    [Output('rankings-graph', 'figure'),
-     Output('output-message', 'children')],
+    Output('rankings-graph', 'figure'),
     [Input('player-dropdown', 'value'),
      Input('x-axis-toggle', 'value')]
 )
@@ -170,7 +179,7 @@ def update_graph(selected_player_ids, x_axis_type):
                 gridwidth=1,
                 gridcolor='rgba(0,0,0,0.1)'
             ),
-            margin=dict(l=50, r=30, t=80, b=50)
+            margin=dict(l=50, r=30, t=40, b=20, pad=0)
         )
         # Add a helpful annotation
         fig.add_annotation(
@@ -181,7 +190,7 @@ def update_graph(selected_player_ids, x_axis_type):
             font=dict(size=16, color="#666666")
         )
         
-        return fig, "No players selected. Please select one or more players from the dropdown."
+        return fig
     
     # Create figure
     fig = go.Figure()
@@ -347,7 +356,7 @@ def update_graph(selected_player_ids, x_axis_type):
     
     message = "Displaying ranking data for selected players." if not messages else "\n".join(messages)
     
-    return fig, message
+    return fig
 
 
 @app.callback(

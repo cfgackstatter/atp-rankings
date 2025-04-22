@@ -1,16 +1,21 @@
+import pandas as pd
 import argparse
-from src.data_loader import load_players, load_rankings, find_player_by_name, get_player_ranking_history
+from src.data_loader import load_players, load_rankings, find_player_by_name
 from src.visualizer import plot_player_rankings
 
 def main():
-    parser = argparse.ArgumentParser(description='ATP Rankings Visualization Tool')
+    parser = argparse.ArgumentParser(description='ATP RankTracker')
+
     parser.add_argument('--players', type=str, nargs='+', required=True,
-                        help='One or more player names to visualize (space separated)')
+                        help='One or more player names to visualize (use quotes for full names, e.g., "Roger Federer")')
+    
     parser.add_argument('--save', type=str, help='Save the plot to specified path')
+
     parser.add_argument('--force-download', action='store_true',
                         help='Force download of data files even if cached')
+    
     parser.add_argument('--by-age', action='store_true',
-                    help='Plot rankings against player age instead of date')
+                        help='Plot rankings against player age instead of date')
     
     args = parser.parse_args()
     
@@ -35,21 +40,35 @@ def main():
         elif len(player_matches) > 1:
             print(f"Multiple players found with name: {name}")
             for _, player in player_matches.iterrows():
-                first_name_col = 'first_name' if 'first_name' in player_matches.columns else 'name_first'
-                last_name_col = 'last_name' if 'last_name' in player_matches.columns else 'name_last'
-                print(f"  {player[first_name_col]} {player[last_name_col]} (ID: {player['player_id']})")
+                first_name = "" if pd.isna(player['first_name']) else player['first_name']
+                last_name = "" if pd.isna(player['last_name']) else player['last_name']
+                country_code = "" if pd.isna(player.get('country_code', '')) else player.get('country_code', '')
+                birth_year = ""
+
+                if 'birth_date' in player and not pd.isna(player['birth_date']):
+                    try:
+                        birth_year = f" - *{pd.to_datetime(player['birth_date']).year}"
+                    except:
+                        pass
+
+                display_name = f"{last_name}, {first_name}"
+                if country_code:
+                    display_name += f" ({country_code})"
+                display_name += birth_year
+                
+                print(f"  {display_name} (ID: {player['player_id']})")
             
             # Use the first match
             player = player_matches.iloc[0]
-            first_name_col = 'first_name' if 'first_name' in player_matches.columns else 'name_first'
-            last_name_col = 'last_name' if 'last_name' in player_matches.columns else 'name_last'
-            print(f"Using the first match: {player[first_name_col]} {player[last_name_col]}")
+            first_name = "" if pd.isna(player['first_name']) else player['first_name']
+            last_name = "" if pd.isna(player['last_name']) else player['last_name']
+            print(f"Using the first match: {first_name} {last_name}")
         else:
             player = player_matches.iloc[0]
         
-        first_name_col = 'first_name' if 'first_name' in player_matches.columns else 'name_first'
-        last_name_col = 'last_name' if 'last_name' in player_matches.columns else 'name_last'
-        player_name = f"{player[first_name_col]} {player[last_name_col]}"
+        first_name = "" if pd.isna(player['first_name']) else player['first_name']
+        last_name = "" if pd.isna(player['last_name']) else player['last_name']
+        player_name = f"{first_name} {last_name}".strip()
         player_ids.append(player['player_id'])
         player_names.append(player_name)
     

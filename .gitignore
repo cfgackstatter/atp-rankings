@@ -43,3 +43,7 @@ Thumbs.db
 # Node.js (if using npm for frontend)
 node_modules/
 npm-debug.log
+
+# Ignore Windows Zone.Identifier files
+*Zone.Identifier
+**/*Zone.Identifier

@@ -313,23 +313,6 @@ def find_player_by_name(players_df, name):
     return players_df[mask]
 
 
-def get_player_ranking_history(rankings_df, player_id):
-    """Extract ranking history for a specific player with optimized performance"""
-    # Ensure player_id is the correct type (int32)
-    player_id = np.int32(player_id)
-    
-    # Use query() for faster filtering when possible
-    try:
-        player_rankings = rankings_df.query(f"player_id == {player_id}")
-    except Exception:
-        # Fall back to boolean indexing if query fails
-        mask = rankings_df['player_id'] == player_id
-        player_rankings = rankings_df[mask]
-    
-    # Sort by date
-    return player_rankings.sort_values('ranking_date')
-
-
 def reduce_mem_usage(df):
     """Reduce memory usage of DataFrame by optimizing data types"""
     start_mem = df.memory_usage(deep=True).sum() / 1024**2
