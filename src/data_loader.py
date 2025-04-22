@@ -3,7 +3,6 @@ import numpy as np
 import requests
 import os
 from pathlib import Path
-from functools import lru_cache
 
 # Base URL for Jeff Sackmann's tennis_atp repository
 BASE_URL = "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master"

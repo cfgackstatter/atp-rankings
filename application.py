@@ -92,7 +92,7 @@ app.layout = html.Div([
                     {'label': 'Age', 'value': 'age'}
                 ],
                 value='date',
-                labelStyle={'display': 'inline-block', 'marginRight': '10px'},
+                labelStyle={'display': 'inline-block', 'marginRight': '15px', 'cursor': 'pointer'},
                 className="radio-group-inline"
             ),
         ], style={'marginLeft': 'auto'})
@@ -367,48 +367,49 @@ def update_graph(selected_player_ids, x_axis_type):
 def update_dropdown_options(search_value, current_values):
     if not search_value:
         raise PreventUpdate
-    
-    # Filter options based on search value
-    filtered_options = []
+
+    # Filter the pre-generated options list
     search_value = search_value.lower()
+    filtered_options = [
+        option for option in player_options
+        if search_value in option.get('search', '').lower()
+    ]
     
-    for _, player in players_df.iterrows():
-        # Handle NaN values safely
-        first_name = "" if pd.isna(player['first_name']) else str(player['first_name']).lower()
-        last_name = "" if pd.isna(player['last_name']) else str(player['last_name']).lower()
-        player_id = player['player_id']
+    # for _, player in players_df.iterrows():
+    #     # Handle NaN values safely
+    #     first_name = "" if pd.isna(player['first_name']) else str(player['first_name']).lower()
+    #     last_name = "" if pd.isna(player['last_name']) else str(player['last_name']).lower()
+    #     player_id = player['player_id']
 
-        # Skip players with empty first AND last names
-        if first_name == '' and last_name == '':
-            continue
+    #     # Skip players with empty first AND last names
+    #     if first_name == '' and last_name == '':
+    #         continue
 
-        # Display name in "Last Name, First Name" format
-        display_name = f"{player['last_name']}, {player['first_name']}"
+    #     # Display name in "Last Name, First Name" format
+    #     display_name = f"{player['last_name']}, {player['first_name']}"
         
-        # Check if search value is in first name, last name, or combined
-        if (search_value in first_name or
-            search_value in last_name or
-            search_value in f"{first_name} {last_name}" or
-            search_value in f"{last_name} {first_name}"):
+    #     # Check if search value is in first name, last name, or combined
+    #     if (search_value in first_name or
+    #         search_value in last_name or
+    #         search_value in f"{first_name} {last_name}" or
+    #         search_value in f"{last_name} {first_name}"):
             
-            filtered_options.append({
-                'label': display_name,
-                'value': player_id
-            })
+    #         filtered_options.append({
+    #             'label': display_name,
+    #             'value': player_id
+    #         })
     
     # Make sure current selections remain in options
     if current_values:
-        for value in current_values:
-            if value not in [opt['value'] for opt in filtered_options]:
-                player_info = players_df[players_df['player_id'] == value]
-                if len(player_info) > 0:
-                    # Handle NaN values in current selections too
-                    last_name = "" if pd.isna(player_info.iloc[0]['last_name']) else player_info.iloc[0]['last_name']
-                    first_name = "" if pd.isna(player_info.iloc[0]['first_name']) else player_info.iloc[0]['first_name']
-                    filtered_options.append({
-                        'label': f"{last_name}, {first_name}",
-                        'value': value
-                    })
+        current_values_set = set(current_values)
+        filtered_values_set = {opt['value'] for opt in filtered_options}
+        missing_values = current_values_set - filtered_values_set
+        
+        for value in missing_values:
+            # Find the original option from player_options
+            matching_options = [opt for opt in player_options if opt['value'] == value]
+            if matching_options:
+                filtered_options.append(matching_options[0])
 
     filtered_options.sort(key=lambda x: x['label'])
     return filtered_options
