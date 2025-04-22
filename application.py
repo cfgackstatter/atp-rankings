@@ -26,6 +26,11 @@ players_df = load_players()
 print("Loading rankings data...")
 rankings_df = load_rankings()
 
+# Remove players who never had a ranking
+ranked_player_ids = set(rankings_df['player_id'].unique())
+print(f"Removed {len(players_df) - len(players_df[players_df['player_id'].isin(ranked_player_ids)])} players who never had a ranking")
+players_df = players_df[players_df['player_id'].isin(ranked_player_ids)].copy()
+
 # Create a function to generate player options once
 def generate_player_options(players_df):
     options = []
