@@ -25,15 +25,13 @@ players_df = load_players()
 print("Loading rankings data...")
 rankings_df = load_rankings()
 
-players_df = reduce_mem_usage(players_df)
-rankings_df = reduce_mem_usage(rankings_df)
-
 # Create a function to generate player options once
 def generate_player_options(players_df):
     options = []
     for _, player in players_df.iterrows():
-        first_name = player['first_name']
-        last_name = player['last_name']
+        # Handle NaN values safely
+        first_name = "" if pd.isna(player['first_name']) else player['first_name']
+        last_name = "" if pd.isna(player['last_name']) else player['last_name']
         player_id = player['player_id']
         
         # Skip players with empty names
@@ -44,11 +42,11 @@ def generate_player_options(players_df):
         display_name = f"{last_name}, {first_name}"
 
         # Add country code if available
-        country_code = player.get('country_code', '')
+        country_code = "" if pd.isna(player.get('country_code', '')) else player.get('country_code', '')
         if country_code:
             display_name += f" ({country_code})"
 
-        # Add birth year if available to help distinguish players with same name
+        # Add birth year if available
         birth_date = player.get('birth_date')
         birth_year = None
         if birth_date and not pd.isna(birth_date):
@@ -61,7 +59,7 @@ def generate_player_options(players_df):
         options.append({
             'label': display_name,
             'value': player_id,
-            'search': f"{first_name} {last_name} {last_name} {first_name} {country_code}"
+            'search': f"{first_name} {last_name} {first_name} {country_code}"
         })
     
     # Sort options by last name
@@ -149,13 +147,9 @@ app.layout = html.Div([
 def update_graph(selected_player_ids, x_axis_type):
     # Handle no selection
     if not selected_player_ids:
-        # Get the earliest date from the rankings data
+        # Create empty figure with date range
         earliest_date = rankings_df['ranking_date'].min()
-        
-        # Get current date
         current_date = pd.Timestamp.now()
-
-        # Create an empty figure with the date range
         fig = go.Figure()
 
         # Update x-axis to show the full date range
@@ -189,45 +183,70 @@ def update_graph(selected_player_ids, x_axis_type):
         
         return fig, "No players selected. Please select one or more players from the dropdown."
     
-    # Load rankings data for selected decades
-    filtered_rankings = rankings_df
-    
     # Create figure
     fig = go.Figure()
     
     # Colors for different players
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+
+    # Pre-fetch all player info at once instead of in the loop
+    player_info_dict = {}
+    for player_id in selected_player_ids:
+        player_info = players_df.query(f"player_id == {player_id}")
+        if not player_info.empty:
+            player_info_dict[player_id] = player_info.iloc[0]
     
     messages = []
+    all_x_values = []  # To store all x values for padding calculation
+
     for i, player_id in enumerate(selected_player_ids):
-        # Get player data
-        player_data = filtered_rankings[filtered_rankings['player_id'] == player_id]
-        player_data = player_data.sort_values('ranking_date')
-        
-        # Get player name
-        player_info = players_df[players_df['player_id'] == player_id]
-        if len(player_info) > 0:
-            first_name = player_info.iloc[0]['first_name']
-            last_name = player_info.iloc[0]['last_name']
-            player_name = f"{first_name} {last_name}"
-        else:
-            player_name = f"Player {player_id}"
-        
-        if len(player_data) == 0:
+        # Use query for faster filtering when possible
+        try:
+            player_data = rankings_df.query(f"player_id == {player_id}")
+        except Exception:
+            # Fall back to boolean indexing if query fails
+            player_data = rankings_df[rankings_df['player_id'] == player_id]
+
+        if player_data.empty:
+            # Get player name from pre-fetched info
+            player_info = player_info_dict.get(player_id)
+            if player_info is not None:
+                first_name = player_info['first_name'] or ""
+                last_name = player_info['last_name'] or ""
+                player_name = f"{first_name} {last_name}".strip()
+            else:
+                player_name = f"Player {player_id}"
+                
             messages.append(f"No ranking data found for {player_name}")
             continue
+
+        # Sort once - more efficient than sort_values for single column
+        player_data = player_data.sort_values('ranking_date')
+
+        # Get player name from pre-fetched info
+        player_info = player_info_dict.get(player_id)
+        if player_info is not None:
+            first_name = player_info['first_name'] or ""
+            last_name = player_info['last_name'] or ""
+            player_name = f"{first_name} {last_name}".strip()
+        else:
+            player_name = f"Player {player_id}"
             
         if x_axis_type == 'age':
-            # Get player's birth date
-            if len(player_info) > 0 and 'birth_date' in player_info.columns:
-                birth_date = pd.to_datetime(player_info.iloc[0]['birth_date'])
+            # Check if we have player info and birth date
+            if player_info is not None and 'birth_date' in player_info and pd.notna(player_info['birth_date']):
+                birth_date = pd.to_datetime(player_info['birth_date'])
                 
-                # Calculate age at each ranking date
+                # Vectorized age calculation - more efficient
+                player_data = player_data.copy()  # Avoid SettingWithCopyWarning
                 player_data['age'] = (player_data['ranking_date'] - birth_date).dt.days / 365.25
+                
+                x_values = player_data['age']
+                all_x_values.extend(x_values)
                 
                 # Plot with age on x-axis
                 fig.add_trace(go.Scatter(
-                    x=player_data['age'],
+                    x=x_values,
                     y=player_data['rank'],
                     mode='lines',
                     name=player_name,
@@ -238,9 +257,12 @@ def update_graph(selected_player_ids, x_axis_type):
                 messages.append(f"Birth date not available for {player_name}, skipping age-based plot")
                 continue
         else:
+            x_values = player_data['ranking_date']
+            all_x_values.extend(x_values)
+            
             # Plot with date on x-axis
             fig.add_trace(go.Scatter(
-                x=player_data['ranking_date'],
+                x=x_values,
                 y=player_data['rank'],
                 mode='lines',
                 name=player_name,
@@ -251,6 +273,16 @@ def update_graph(selected_player_ids, x_axis_type):
     # Set up layout
     if x_axis_type == 'age':
         x_axis_title = 'Age (years)'
+
+        # Add padding to age axis if we have data
+        if all_x_values:
+            min_x = min(all_x_values)
+            max_x = max(all_x_values)
+            padding = (max_x - min_x) * 0.01  # 1% padding
+            fig.update_xaxes(
+                range=[min_x - padding, max_x + padding]  # Add padding
+            )
+
         fig.update_xaxes(
             title=dict(text=x_axis_title, font=dict(size=14, color='#444')),
             tickformat='.1f',
@@ -260,6 +292,17 @@ def update_graph(selected_player_ids, x_axis_type):
         )
     else:
         x_axis_title = 'Date'
+
+        # Add padding to date axis if we have data
+        if all_x_values:
+            min_date = min(all_x_values)
+            max_date = max(all_x_values)
+            date_range = max_date - min_date
+            padding = pd.Timedelta(days=int(date_range.days * 0.05))  # 5% padding
+            fig.update_xaxes(
+                range=[min_date - padding, max_date + padding]  # Add padding
+            )
+
         fig.update_xaxes(
             title=dict(text=x_axis_title, font=dict(size=14, color='#444')),
             hoverformat='%b %d, %Y',
@@ -321,8 +364,9 @@ def update_dropdown_options(search_value, current_values):
     search_value = search_value.lower()
     
     for _, player in players_df.iterrows():
-        first_name = player['first_name'].lower()
-        last_name = player['last_name'].lower()
+        # Handle NaN values safely
+        first_name = "" if pd.isna(player['first_name']) else str(player['first_name']).lower()
+        last_name = "" if pd.isna(player['last_name']) else str(player['last_name']).lower()
         player_id = player['player_id']
 
         # Skip players with empty first AND last names
@@ -333,8 +377,8 @@ def update_dropdown_options(search_value, current_values):
         display_name = f"{player['last_name']}, {player['first_name']}"
         
         # Check if search value is in first name, last name, or combined
-        if (search_value in first_name or 
-            search_value in last_name or 
+        if (search_value in first_name or
+            search_value in last_name or
             search_value in f"{first_name} {last_name}" or
             search_value in f"{last_name} {first_name}"):
             
@@ -349,12 +393,15 @@ def update_dropdown_options(search_value, current_values):
             if value not in [opt['value'] for opt in filtered_options]:
                 player_info = players_df[players_df['player_id'] == value]
                 if len(player_info) > 0:
+                    # Handle NaN values in current selections too
+                    last_name = "" if pd.isna(player_info.iloc[0]['last_name']) else player_info.iloc[0]['last_name']
+                    first_name = "" if pd.isna(player_info.iloc[0]['first_name']) else player_info.iloc[0]['first_name']
                     filtered_options.append({
-                        'label': f"{player_info.iloc[0]['last_name']}, {player_info.iloc[0]['first_name']}",
+                        'label': f"{last_name}, {first_name}",
                         'value': value
                     })
+
     filtered_options.sort(key=lambda x: x['label'])
-    
     return filtered_options
 
 

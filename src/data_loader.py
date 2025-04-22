@@ -3,15 +3,18 @@ import numpy as np
 import requests
 import os
 from pathlib import Path
+from functools import lru_cache
 
 # Base URL for Jeff Sackmann's tennis_atp repository
 BASE_URL = "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master"
+
 
 def ensure_cache_dir():
     """Create cache directory if it doesn't exist"""
     cache_dir = Path("data/cache")
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
+
 
 def download_file(filename, force_download=False):
     """Download a file from the tennis_atp repository if not in cache"""
@@ -37,14 +40,45 @@ def download_file(filename, force_download=False):
     print(f"Downloaded {filename} to {local_path}")
     return local_path
 
+
 def load_players():
-    """Load player data from atp_players.csv"""
+    """Load player data from atp_players.csv with optimized memory usage"""
     players_file = download_file("atp_players.csv")
     
     # First time: load CSV and save as parquet
     parquet_path = Path("data/cache/players.parquet")
+
     if not parquet_path.exists():
-        players = pd.read_csv(players_file, low_memory=False, parse_dates=['dob'], keep_default_na=False)
+        # Read CSV with minimal columns first to determine schema
+        sample = pd.read_csv(players_file, nrows=5)
+
+        # Define columns to read and their types
+        usecols = ['player_id', 'name_first', 'name_last', 'dob', 'ioc']
+
+        dtype_dict = {
+            'player_id': 'int32',
+            'name_first': 'str',
+            'name_last': 'str',
+            'hand': 'category',  # Categorical since limited options (R, L)
+            'ioc': 'category',   # Country codes are categorical
+            'wikidata_id': 'str'
+        }
+
+        # Read CSV with optimized settings
+        players = pd.read_csv(
+            players_file,
+            low_memory=False,
+            usecols=usecols,
+            dtype=dtype_dict,
+            parse_dates=['dob'],
+            keep_default_na=False,
+            na_values=['', 'NA', 'NULL']
+        )
+        
+        # Replace NaN values with empty strings in name columns
+        players['name_first'] = players['name_first'].fillna('')
+        players['name_last'] = players['name_last'].fillna('')
+
         # Standardize column names
         column_mapping = {
             'name_first': 'first_name',
@@ -52,147 +86,313 @@ def load_players():
             'dob': 'birth_date',
             'ioc': 'country_code'
         }
+
         rename_dict = {old: new for old, new in column_mapping.items() if old in players.columns}
         if rename_dict:
             players = players.rename(columns=rename_dict)
-        # Save as parquet for future use
-        players.to_parquet(parquet_path)
+
+        # Create name search columns for faster lookups - pre-compute lowercase versions
+        players['name_lower_first'] = players['first_name'].str.lower()
+        players['name_lower_last'] = players['last_name'].str.lower()
+
+        # Combine names efficiently
+        players['name_lower_full'] = players['name_lower_first'] + ' ' + players['name_lower_last']
+        
+        # Apply memory optimization
+        players = reduce_mem_usage(players)
+
+        # Save as parquet with optimized compression
+        players.to_parquet(
+            parquet_path,
+            compression='snappy',  # Fast compression/decompression
+            index=False           # Don't store the index
+        )
     else:
         # Use parquet for subsequent loads (much faster)
-        players = pd.read_parquet(parquet_path)
+        players = pd.read_parquet(parquet_path, memory_map=True)  # Use memory mapping for large files
     
     return players
 
-def load_rankings(decades=None):
+
+def load_rankings(decades=None, force_download=False):
     """
-    Load all rankings data
-      
+    Load all rankings data with optimized memory usage
+    
+    Args:
+        decades: List of decades to load (if None, loads all)
+        force_download: Whether to force download and reprocessing
+        
     Returns:
         DataFrame with all rankings data
     """
-    decades = ['70s', '80s', '90s', '00s', '10s', '20s', 'current']
+    decades = decades or ['70s', '80s', '90s', '00s', '10s', '20s', 'current']
 
     # Check if combined parquet file exists
     combined_path = Path("data/cache/combined_rankings.parquet")
-    if combined_path.exists():
+    
+    if combined_path.exists() and not force_download:
         print("Loading pre-processed rankings data...")
-        return pd.read_parquet(combined_path)
+        return pd.read_parquet(combined_path, memory_map=True)  # Use memory mapping
     
     # Otherwise process from CSV files
-    rankings_dfs = []
+    temp_files = []
     
     for decade in decades:
         filename = f"atp_rankings_{decade}.csv"
         try:
             file_path = download_file(filename)
-            df = pd.read_csv(file_path)
+
+            # Check columns in the file (without loading the whole file)
+            sample = pd.read_csv(file_path, nrows=5)
+            date_col = 'ranking_date' if 'ranking_date' in sample.columns else 'date'
+
+            # Define columns to read and their types - skip points column
+            usecols = [date_col, 'rank', 'player']
+            dtypes = {
+                'player': 'int32',  # Use int32 for player IDs
+                'rank': 'int16'     # Rankings won't exceed int16 range
+            }
+
+            # Process in chunks to reduce memory usage
+            print(f"Processing {filename} in chunks...")
             
-            # Add decade column for reference
-            df['decade'] = decade
+            # Create a temporary file for this decade
+            temp_parquet = Path(f"data/cache/temp_{decade}.parquet")
+            if temp_parquet.exists():
+                os.remove(temp_parquet)
+
+            # Process each chunk separately and write to a single parquet file
+            chunks = []
+            for chunk in pd.read_csv(file_path, usecols=usecols, dtype=dtypes, chunksize=250000):
+                # Convert date to datetime
+                if date_col == 'date':
+                    chunk['ranking_date'] = pd.to_datetime(chunk['date'], format="%Y%m%d", errors='coerce')
+                    chunk = chunk.drop(columns=['date'])
+                else:
+                    chunk['ranking_date'] = pd.to_datetime(chunk[date_col], format="%Y%m%d", errors='coerce')
+                
+                # Rename player column if needed
+                if 'player' in chunk.columns and 'player_id' not in chunk.columns:
+                    chunk = chunk.rename(columns={'player': 'player_id'})
+                
+                # Add to list of chunks
+                chunks.append(chunk)
+                
+                # To save memory, write to parquet if we have accumulated enough chunks
+                if len(chunks) >= 4:
+                    combined_chunk = pd.concat(chunks, ignore_index=True)
+                    combined_chunk = reduce_mem_usage(combined_chunk)
+                    
+                    # Write to parquet
+                    combined_chunk.to_parquet(
+                        temp_parquet,
+                        compression='snappy',
+                        index=False
+                    )
+                    
+                    # Clear chunks to free memory
+                    chunks = []
             
-            # Convert ranking_date to datetime
-            if 'ranking_date' in df.columns:
-                df['ranking_date'] = pd.to_datetime(df['ranking_date'], format="%Y%m%d", errors='coerce')
-            elif 'date' in df.columns:
-                df['ranking_date'] = pd.to_datetime(df['date'], format="%Y%m%d", errors='coerce')
-                df = df.rename(columns={'date': 'ranking_date'})
+            # Process any remaining chunks
+            if chunks:
+                combined_chunk = pd.concat(chunks, ignore_index=True)
+                combined_chunk = reduce_mem_usage(combined_chunk)
+                
+                # Write to parquet
+                combined_chunk.to_parquet(
+                    temp_parquet,
+                    compression='snappy',
+                    index=False
+                )
             
-            rankings_dfs.append(df)
-            print(f"Loaded {len(df)} rankings from {decade}")
+            # Add to list of files to combine
+            temp_files.append(temp_parquet)
             
         except Exception as e:
             print(f"Error loading {filename}: {e}")
     
-    if not rankings_dfs:
+    if not temp_files:
         raise ValueError("No ranking data could be loaded")
     
-    # Combine all dataframes
-    combined_rankings = pd.concat(rankings_dfs, ignore_index=True)
+    # Combine all parquet files
+    print("Combining all decades...")
     
-    # Standardize column names
-    if 'player' in combined_rankings.columns and 'player_id' not in combined_rankings.columns:
-        combined_rankings = combined_rankings.rename(columns={'player': 'player_id'})
+    # Read and combine in chunks to avoid memory issues
+    combined_rankings = pd.concat([pd.read_parquet(file) for file in temp_files], ignore_index=True)
     
-    # Save combined result as parquet
-    combined_rankings.to_parquet(combined_path)
+    # Final memory optimization
+    combined_rankings = reduce_mem_usage(combined_rankings)
+    
+    # Save combined result
+    combined_rankings.to_parquet(
+        combined_path,
+        compression='snappy',
+        index=False
+    )
+    
+    # Clean up temporary files
+    for file in temp_files:
+        if file.exists():
+            os.remove(file)
+    
     return combined_rankings
+
 
 def find_player_by_name(players_df, name):
     """Find player by name, prioritizing exact matches over partial matches"""
     name_lower = name.lower()
+
+    # Use query() for faster filtering when possible
+    if 'name_lower_full' in players_df.columns:
+        # First, try exact full name match
+        exact_full_matches = players_df.query(f"name_lower_full == '{name_lower}'")
+        if len(exact_full_matches) > 0:
+            return exact_full_matches
     
-    # First, try to find an exact full name match
+    # If name contains a space, try matching first and last name parts
     if ' ' in name_lower:
-        # Split the input name into first and last parts
         parts = name_lower.split(' ', 1)
         first_part = parts[0]
         last_part = parts[1]
         
-        # Try exact match on first and last name
-        exact_matches = players_df[
-            (players_df['first_name'].str.lower() == first_part) & 
-            (players_df['last_name'].str.lower() == last_part)
-        ]
+        # Try exact match on first and last parts
+        try:
+            first_last_matches = players_df.query(
+                f"name_lower_first == '{first_part}' and name_lower_last == '{last_part}'"
+            )
+            if len(first_last_matches) > 0:
+                return first_last_matches
+            
+            # Try exact match on last and first parts (reversed order)
+            last_first_matches = players_df.query(
+                f"name_lower_first == '{last_part}' and name_lower_last == '{first_part}'"
+            )
+            if len(last_first_matches) > 0:
+                return last_first_matches
+        except Exception:
+            # Fall back to standard filtering if query fails (e.g., special characters in name)
+            first_last_matches = players_df[
+                (players_df['name_lower_first'] == first_part) &
+                (players_df['name_lower_last'] == last_part)
+            ]
+            if len(first_last_matches) > 0:
+                return first_last_matches
+            
+            last_first_matches = players_df[
+                (players_df['name_lower_first'] == last_part) &
+                (players_df['name_lower_last'] == first_part)
+            ]
+            if len(last_first_matches) > 0:
+                return last_first_matches
+    
+    # Try exact match on first or last name
+    try:
+        exact_first_matches = players_df.query(f"name_lower_first == '{name_lower}'")
+        if len(exact_first_matches) > 0:
+            return exact_first_matches
         
-        if len(exact_matches) > 0:
-            return exact_matches
+        exact_last_matches = players_df.query(f"name_lower_last == '{name_lower}'")
+        if len(exact_last_matches) > 0:
+            return exact_last_matches
+    except Exception:
+        # Fall back to standard filtering
+        exact_first_matches = players_df[players_df['name_lower_first'] == name_lower]
+        if len(exact_first_matches) > 0:
+            return exact_first_matches
+        
+        exact_last_matches = players_df[players_df['name_lower_last'] == name_lower]
+        if len(exact_last_matches) > 0:
+            return exact_last_matches
     
-    # If no exact full name match or no space in name, try exact match on either first or last name
-    exact_first_matches = players_df[players_df['first_name'].str.lower() == name_lower]
-    if len(exact_first_matches) > 0:
-        return exact_first_matches
-    
-    exact_last_matches = players_df[players_df['last_name'].str.lower() == name_lower]
-    if len(exact_last_matches) > 0:
-        return exact_last_matches
-    
-    # If no exact matches found, fall back to partial matching
-    mask = pd.Series(False, index=players_df.index)
-    
-    if 'first_name' in players_df.columns:
-        mask |= players_df['first_name'].str.lower().str.contains(name_lower, na=False)
-    
-    if 'last_name' in players_df.columns:
-        mask |= players_df['last_name'].str.lower().str.contains(name_lower, na=False)
+    # Fall back to partial matching using contains with case=False for case insensitivity
+    mask = (
+        players_df['name_lower_first'].str.contains(name_lower, regex=False, na=False) |
+        players_df['name_lower_last'].str.contains(name_lower, regex=False, na=False)
+    )
     
     return players_df[mask]
 
+
 def get_player_ranking_history(rankings_df, player_id):
-    """Extract ranking history for a specific player"""
-    # Use 'player' column instead of 'player_id'
-    player_rankings = rankings_df[rankings_df['player_id'] == player_id]
+    """Extract ranking history for a specific player with optimized performance"""
+    # Ensure player_id is the correct type (int32)
+    player_id = np.int32(player_id)
+    
+    # Use query() for faster filtering when possible
+    try:
+        player_rankings = rankings_df.query(f"player_id == {player_id}")
+    except Exception:
+        # Fall back to boolean indexing if query fails
+        mask = rankings_df['player_id'] == player_id
+        player_rankings = rankings_df[mask]
+    
+    # Sort by date
     return player_rankings.sort_values('ranking_date')
+
 
 def reduce_mem_usage(df):
     """Reduce memory usage of DataFrame by optimizing data types"""
-    start_mem = df.memory_usage().sum() / 1024**2
+    start_mem = df.memory_usage(deep=True).sum() / 1024**2
     print(f"Memory usage of dataframe is {start_mem:.2f} MB")
     
+    # Specific optimizations for ATP rankings data
+    type_optimizations = {
+        'player_id': 'int32',  # Keep player IDs as integers
+        'rank': 'int16',       # Rankings won't exceed int16 range
+        'ranking_date': 'datetime64[ns]'  # Keep as datetime
+    }
+    
+    # Apply specific optimizations first
+    for col, dtype in type_optimizations.items():
+        if col in df.columns:
+            try:
+                df[col] = df[col].astype(dtype)
+            except Exception as e:
+                print(f"Could not convert {col} to {dtype}: {e}")
+    
+    # Then apply general optimizations to remaining columns
     for col in df.columns:
-        col_type = df[col].dtype
+        # Skip columns we've already optimized
+        if col in type_optimizations:
+            continue
+            
+        # Skip datetime columns
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            continue
+            
+        # Skip categorical columns
+        if pd.api.types.is_categorical_dtype(df[col]):
+            continue
+            
+        # For string columns, consider converting to categorical if few unique values
+        if pd.api.types.is_object_dtype(df[col]):
+            num_unique = df[col].nunique()
+            num_total = len(df)
+            if num_unique / num_total < 0.5:  # If less than 50% unique values
+                df[col] = df[col].astype('category')
+            continue
         
-        if col_type != object and col_type != 'datetime64[ns]':
+        # For numeric columns
+        if pd.api.types.is_numeric_dtype(df[col]):
             c_min = df[col].min()
             c_max = df[col].max()
             
-            if str(col_type)[:3] == 'int':
+            # For integers
+            if pd.api.types.is_integer_dtype(df[col]):
                 if c_min > np.iinfo(np.int8).min and c_max < np.iinfo(np.int8).max:
                     df[col] = df[col].astype(np.int8)
                 elif c_min > np.iinfo(np.int16).min and c_max < np.iinfo(np.int16).max:
                     df[col] = df[col].astype(np.int16)
                 elif c_min > np.iinfo(np.int32).min and c_max < np.iinfo(np.int32).max:
                     df[col] = df[col].astype(np.int32)
-                elif c_min > np.iinfo(np.int64).min and c_max < np.iinfo(np.int64).max:
-                    df[col] = df[col].astype(np.int64)
+            # For floats
             else:
                 if c_min > np.finfo(np.float16).min and c_max < np.finfo(np.float16).max:
                     df[col] = df[col].astype(np.float16)
                 elif c_min > np.finfo(np.float32).min and c_max < np.finfo(np.float32).max:
                     df[col] = df[col].astype(np.float32)
-                else:
-                    df[col] = df[col].astype(np.float64)
     
-    end_mem = df.memory_usage().sum() / 1024**2
+    end_mem = df.memory_usage(deep=True).sum() / 1024**2
     print(f"Memory usage after optimization is: {end_mem:.2f} MB")
     print(f"Decreased by {100 * (start_mem - end_mem) / start_mem:.1f}%")
     
