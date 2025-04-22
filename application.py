@@ -375,30 +375,6 @@ def update_dropdown_options(search_value, current_values):
         if search_value in option.get('search', '').lower()
     ]
     
-    # for _, player in players_df.iterrows():
-    #     # Handle NaN values safely
-    #     first_name = "" if pd.isna(player['first_name']) else str(player['first_name']).lower()
-    #     last_name = "" if pd.isna(player['last_name']) else str(player['last_name']).lower()
-    #     player_id = player['player_id']
-
-    #     # Skip players with empty first AND last names
-    #     if first_name == '' and last_name == '':
-    #         continue
-
-    #     # Display name in "Last Name, First Name" format
-    #     display_name = f"{player['last_name']}, {player['first_name']}"
-        
-    #     # Check if search value is in first name, last name, or combined
-    #     if (search_value in first_name or
-    #         search_value in last_name or
-    #         search_value in f"{first_name} {last_name}" or
-    #         search_value in f"{last_name} {first_name}"):
-            
-    #         filtered_options.append({
-    #             'label': display_name,
-    #             'value': player_id
-    #         })
-    
     # Make sure current selections remain in options
     if current_values:
         current_values_set = set(current_values)
