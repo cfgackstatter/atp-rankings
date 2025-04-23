@@ -113,13 +113,15 @@ def load_players():
     return players
 
 
-def load_rankings(decades=None, force_download=False):
+def load_rankings(decades=None, force_download=False, fill_gaps=False, max_gap_days=5000):
     """
-    Load all rankings data with optimized memory usage
+    Load all rankings data
     
     Args:
         decades: List of decades to load (if None, loads all)
         force_download: Whether to force download and reprocessing
+        fill_gaps: Whether to insert NaN for gaps in player data
+        max_gap_days: Maximum allowed gap in days before inserting NaN
         
     Returns:
         DataFrame with all rankings data
@@ -221,6 +223,10 @@ def load_rankings(decades=None, force_download=False):
     
     # Final memory optimization
     combined_rankings = reduce_mem_usage(combined_rankings)
+
+    # After loading and combining all rankings data:
+    if fill_gaps:
+        combined_rankings = preprocess_rankings_with_gaps(combined_rankings, max_gap_days)
     
     # Save combined result
     combined_rankings.to_parquet(
@@ -379,3 +385,83 @@ def reduce_mem_usage(df):
     print(f"Decreased by {100 * (start_mem - end_mem) / start_mem:.1f}%")
     
     return df
+
+
+def preprocess_rankings_with_gaps(rankings_df, max_gap_days=5000):
+    """
+    For each player, insert NaN rows for gaps in ranking data that exceed max_gap_days.
+    
+    Args:
+        rankings_df: DataFrame containing ranking data
+        max_gap_days: Maximum allowed gap in days before inserting NaN
+        
+    Returns:
+        DataFrame with NaN values inserted for large gaps
+    """
+    print("Preprocessing rankings data to insert NaN for gaps...")
+    
+    # Create a copy to avoid modifying the original
+    processed_df = rankings_df.copy()
+    
+    # Get unique player IDs
+    player_ids = processed_df['player_id'].unique()
+    
+    # List to store DataFrames for each player (with gaps filled)
+    player_dfs = []
+    
+    for player_id in player_ids:
+        # Get data for this player
+        player_data = processed_df[processed_df['player_id'] == player_id].sort_values('ranking_date')
+        
+        if len(player_data) <= 1:
+            # No gaps to fill if only one or zero records
+            player_dfs.append(player_data)
+            continue
+        
+        # Calculate date differences
+        player_data['date_diff'] = player_data['ranking_date'].diff().dt.days
+        
+        # Find gaps larger than max_gap_days
+        gap_indices = player_data[player_data['date_diff'] > max_gap_days].index
+        
+        if len(gap_indices) == 0:
+            # No large gaps for this player
+            player_dfs.append(player_data.drop(columns=['date_diff']))
+            continue
+        
+        # For each large gap, insert a NaN row
+        rows_to_add = []
+        
+        for idx in gap_indices:
+            # Get the dates before and after the gap
+            prev_date = player_data.loc[player_data.index[player_data.index.get_loc(idx)-1], 'ranking_date']
+            curr_date = player_data.loc[idx, 'ranking_date']
+            
+            # Calculate a date in the middle of the gap
+            gap_middle_date = prev_date + (curr_date - prev_date) / 2
+            
+            # Create a new row with NaN rank
+            new_row = {
+                'player_id': player_id,
+                'ranking_date': gap_middle_date,
+                'rank': np.nan,
+                'date_diff': np.nan
+            }
+            rows_to_add.append(new_row)
+        
+        # Add the new rows to the player's data
+        for row in rows_to_add:
+            player_data = pd.concat([player_data, pd.DataFrame([row])], ignore_index=True)
+        
+        # Sort again by date and drop the date_diff column
+        player_data = player_data.sort_values('ranking_date').drop(columns=['date_diff'])
+        
+        # Add to the list of processed player DataFrames
+        player_dfs.append(player_data)
+    
+    # Combine all player DataFrames
+    result_df = pd.concat(player_dfs, ignore_index=True)
+    
+    print(f"Added {len(result_df) - len(rankings_df)} NaN rows for gaps > {max_gap_days} days")
+    
+    return result_df

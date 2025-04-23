@@ -24,7 +24,7 @@ print("Loading player data...")
 players_df = load_players()
 
 print("Loading rankings data...")
-rankings_df = load_rankings()
+rankings_df = load_rankings(fill_gaps=True, max_gap_days=180)
 
 # Remove players who never had a ranking
 ranked_player_ids = set(rankings_df['player_id'].unique())
@@ -373,7 +373,8 @@ def update_graph(selected_player_ids, x_axis_type):
                     mode='lines',
                     name=player_name,
                     line=dict(color=colors[i % len(colors)], width=2.5, shape='linear'),
-                    hovertemplate='<b>%{fullData.name}</b><br>Rank: %{y}<extra></extra>'
+                    hovertemplate='<b>%{fullData.name}</b><br>Rank: %{y}<extra></extra>',
+                    connectgaps=False
                 ))
             else:
                 messages.append(f"Birth date not available for {player_name}, skipping age-based plot")
@@ -389,7 +390,8 @@ def update_graph(selected_player_ids, x_axis_type):
                 mode='lines',
                 name=player_name,
                 line=dict(color=colors[i % len(colors)], width=2.5, shape='linear'),
-                hovertemplate='<b>%{fullData.name}</b><br>Rank: %{y}<extra></extra>'
+                hovertemplate='<b>%{fullData.name}</b><br>Rank: %{y}<extra></extra>',
+                connectgaps=False
             ))
     
     # Set up layout
