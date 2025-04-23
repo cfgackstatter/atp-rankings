@@ -372,7 +372,7 @@ def update_graph(selected_player_ids, x_axis_type):
                     y=player_data['rank'],
                     mode='lines',
                     name=player_name,
-                    line=dict(color=colors[i % len(colors)], width=2.5, shape='spline'),
+                    line=dict(color=colors[i % len(colors)], width=2.5, shape='linear'),
                     hovertemplate='<b>%{fullData.name}</b><br>Rank: %{y}<extra></extra>'
                 ))
             else:
@@ -388,7 +388,7 @@ def update_graph(selected_player_ids, x_axis_type):
                 y=player_data['rank'],
                 mode='lines',
                 name=player_name,
-                line=dict(color=colors[i % len(colors)], width=2.5, shape='spline'),
+                line=dict(color=colors[i % len(colors)], width=2.5, shape='linear'),
                 hovertemplate='<b>%{fullData.name}</b><br>Rank: %{y}<extra></extra>'
             ))
     
