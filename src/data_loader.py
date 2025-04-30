@@ -2,7 +2,13 @@ import pandas as pd
 import numpy as np
 import requests
 import os
+import logging
 from pathlib import Path
+import glob
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Base URL for Jeff Sackmann's tennis_atp repository
 BASE_URL = "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master"
@@ -40,6 +46,75 @@ def download_file(filename, force_download=False):
     return local_path
 
 
+def reduce_mem_usage(df):
+    """Reduce memory usage of DataFrame by optimizing data types"""
+    start_mem = df.memory_usage(deep=True).sum() / 1024**2
+    logger.info(f"Memory usage of dataframe is {start_mem:.2f} MB")
+    
+    # Specific optimizations for ATP rankings data
+    type_optimizations = {
+        'player_id': 'int32',  # Keep player IDs as integers
+        'rank': 'int16',       # Rankings won't exceed int16 range
+        'ranking_date': 'datetime64[ns]'  # Keep as datetime
+    }
+    
+    # Apply specific optimizations first
+    for col, dtype in type_optimizations.items():
+        if col in df.columns:
+            try:
+                df[col] = df[col].astype(dtype)
+            except Exception as e:
+                logger.warning(f"Could not convert {col} to {dtype}: {e}")
+    
+    # Then apply general optimizations to remaining columns
+    for col in df.columns:
+        # Skip columns we've already optimized
+        if col in type_optimizations:
+            continue
+            
+        # Skip datetime columns
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            continue
+            
+        # Skip categorical columns
+        if pd.api.types.is_categorical_dtype(df[col]):
+            continue
+            
+        # For string columns, consider converting to categorical if few unique values
+        if pd.api.types.is_object_dtype(df[col]):
+            num_unique = df[col].nunique()
+            num_total = len(df)
+            if num_unique / num_total < 0.5:  # If less than 50% unique values
+                df[col] = df[col].astype('category')
+            continue
+        
+        # For numeric columns
+        if pd.api.types.is_numeric_dtype(df[col]):
+            c_min = df[col].min()
+            c_max = df[col].max()
+            
+            # For integers
+            if pd.api.types.is_integer_dtype(df[col]):
+                if c_min > np.iinfo(np.int8).min and c_max < np.iinfo(np.int8).max:
+                    df[col] = df[col].astype(np.int8)
+                elif c_min > np.iinfo(np.int16).min and c_max < np.iinfo(np.int16).max:
+                    df[col] = df[col].astype(np.int16)
+                elif c_min > np.iinfo(np.int32).min and c_max < np.iinfo(np.int32).max:
+                    df[col] = df[col].astype(np.int32)
+            # For floats
+            else:
+                if c_min > np.finfo(np.float16).min and c_max < np.finfo(np.float16).max:
+                    df[col] = df[col].astype(np.float16)
+                elif c_min > np.finfo(np.float32).min and c_max < np.finfo(np.float32).max:
+                    df[col] = df[col].astype(np.float32)
+    
+    end_mem = df.memory_usage(deep=True).sum() / 1024**2
+    logger.info(f"Memory usage after optimization is: {end_mem:.2f} MB")
+    logger.info(f"Decreased by {100 * (start_mem - end_mem) / start_mem:.1f}%")
+    
+    return df
+
+
 def load_players():
     """Load player data from atp_players.csv with optimized memory usage"""
     players_file = download_file("atp_players.csv")
@@ -48,9 +123,6 @@ def load_players():
     parquet_path = Path("data/cache/players.parquet")
 
     if not parquet_path.exists():
-        # Read CSV with minimal columns first to determine schema
-        sample = pd.read_csv(players_file, nrows=5)
-
         # Define columns to read and their types
         usecols = ['player_id', 'name_first', 'name_last', 'dob', 'ioc']
 
@@ -115,7 +187,7 @@ def load_players():
 
 def load_rankings(decades=None, force_download=False, fill_gaps=False, max_gap_days=5000):
     """
-    Load all rankings data
+    Load all rankings data, including 2025, and update combined_rankings.parquet.
     
     Args:
         decades: List of decades to load (if None, loads all)
@@ -132,7 +204,7 @@ def load_rankings(decades=None, force_download=False, fill_gaps=False, max_gap_d
     combined_path = Path("data/cache/combined_rankings.parquet")
     
     if combined_path.exists() and not force_download:
-        print("Loading pre-processed rankings data...")
+        logger.info("Loading pre-processed rankings data...")
         return pd.read_parquet(combined_path, memory_map=True)  # Use memory mapping
     
     # Otherwise process from CSV files
@@ -155,7 +227,7 @@ def load_rankings(decades=None, force_download=False, fill_gaps=False, max_gap_d
             }
 
             # Process in chunks to reduce memory usage
-            print(f"Processing {filename} in chunks...")
+            logger.info(f"Processing {filename} in chunks...")
             
             # Create a temporary file for this decade
             temp_parquet = Path(f"data/cache/temp_{decade}.parquet")
@@ -210,13 +282,26 @@ def load_rankings(decades=None, force_download=False, fill_gaps=False, max_gap_d
             temp_files.append(temp_parquet)
             
         except Exception as e:
-            print(f"Error loading {filename}: {e}")
+            logger.error(f"Error loading {filename}: {e}")
     
+    # Add the 2025 file (single CSV, already mapped and deduped)
+    atp_2025_csv = "data/cache/atp_rankings_2025.csv"
+    if os.path.exists(atp_2025_csv):
+        logger.info(f"Adding 2025 rankings from {atp_2025_csv}")
+        df_2025 = pd.read_csv(atp_2025_csv, parse_dates=['ranking_date'])
+        temp_2025_parquet = Path("data/cache/temp_2025.parquet")
+        df_2025 = reduce_mem_usage(df_2025)
+        df_2025.to_parquet(temp_2025_parquet, compression='snappy', index=False)
+        temp_files.append(temp_2025_parquet)
+    else:
+        logger.warning(f"2025 rankings CSV not found at {atp_2025_csv}")
+
     if not temp_files:
+        logger.error("No ranking data could be loaded")
         raise ValueError("No ranking data could be loaded")
     
     # Combine all parquet files
-    print("Combining all decades...")
+    logger.info("Combining all decades and 2025 data...")
     
     # Read and combine in chunks to avoid memory issues
     combined_rankings = pd.concat([pd.read_parquet(file) for file in temp_files], ignore_index=True)
@@ -241,6 +326,86 @@ def load_rankings(decades=None, force_download=False, fill_gaps=False, max_gap_d
             os.remove(file)
     
     return combined_rankings
+
+
+def preprocess_rankings_with_gaps(rankings_df, max_gap_days=5000):
+    """
+    For each player, insert NaN rows for gaps in ranking data that exceed max_gap_days.
+    
+    Args:
+        rankings_df: DataFrame containing ranking data
+        max_gap_days: Maximum allowed gap in days before inserting NaN
+        
+    Returns:
+        DataFrame with NaN values inserted for large gaps
+    """
+    logger.info("Preprocessing rankings data to insert NaN for gaps...")
+    
+    # Create a copy to avoid modifying the original
+    processed_df = rankings_df.copy()
+    
+    # Get unique player IDs
+    player_ids = processed_df['player_id'].unique()
+    
+    # List to store DataFrames for each player (with gaps filled)
+    player_dfs = []
+    
+    for player_id in player_ids:
+        # Get data for this player
+        player_data = processed_df[processed_df['player_id'] == player_id].sort_values('ranking_date')
+        
+        if len(player_data) <= 1:
+            # No gaps to fill if only one or zero records
+            player_dfs.append(player_data)
+            continue
+        
+        # Calculate date differences
+        player_data['date_diff'] = player_data['ranking_date'].diff().dt.days
+        
+        # Find gaps larger than max_gap_days
+        gap_indices = player_data[player_data['date_diff'] > max_gap_days].index
+        
+        if len(gap_indices) == 0:
+            # No large gaps for this player
+            player_dfs.append(player_data.drop(columns=['date_diff']))
+            continue
+        
+        # For each large gap, insert a NaN row
+        rows_to_add = []
+        
+        for idx in gap_indices:
+            # Get the dates before and after the gap
+            prev_date = player_data.loc[player_data.index[player_data.index.get_loc(idx)-1], 'ranking_date']
+            curr_date = player_data.loc[idx, 'ranking_date']
+            
+            # Calculate a date in the middle of the gap
+            gap_middle_date = prev_date + (curr_date - prev_date) / 2
+            
+            # Create a new row with NaN rank
+            new_row = {
+                'player_id': player_id,
+                'ranking_date': gap_middle_date,
+                'rank': np.nan,
+                'date_diff': np.nan
+            }
+            rows_to_add.append(new_row)
+        
+        # Add the new rows to the player's data
+        for row in rows_to_add:
+            player_data = pd.concat([player_data, pd.DataFrame([row])], ignore_index=True)
+        
+        # Sort again by date and drop the date_diff column
+        player_data = player_data.sort_values('ranking_date').drop(columns=['date_diff'])
+        
+        # Add to the list of processed player DataFrames
+        player_dfs.append(player_data)
+    
+    # Combine all player DataFrames
+    result_df = pd.concat(player_dfs, ignore_index=True)
+    
+    logger.info(f"Added {len(result_df) - len(rankings_df)} NaN rows for gaps > {max_gap_days} days")
+    
+    return result_df
 
 
 def find_player_by_name(players_df, name):
@@ -316,152 +481,3 @@ def find_player_by_name(players_df, name):
     )
     
     return players_df[mask]
-
-
-def reduce_mem_usage(df):
-    """Reduce memory usage of DataFrame by optimizing data types"""
-    start_mem = df.memory_usage(deep=True).sum() / 1024**2
-    print(f"Memory usage of dataframe is {start_mem:.2f} MB")
-    
-    # Specific optimizations for ATP rankings data
-    type_optimizations = {
-        'player_id': 'int32',  # Keep player IDs as integers
-        'rank': 'int16',       # Rankings won't exceed int16 range
-        'ranking_date': 'datetime64[ns]'  # Keep as datetime
-    }
-    
-    # Apply specific optimizations first
-    for col, dtype in type_optimizations.items():
-        if col in df.columns:
-            try:
-                df[col] = df[col].astype(dtype)
-            except Exception as e:
-                print(f"Could not convert {col} to {dtype}: {e}")
-    
-    # Then apply general optimizations to remaining columns
-    for col in df.columns:
-        # Skip columns we've already optimized
-        if col in type_optimizations:
-            continue
-            
-        # Skip datetime columns
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
-            continue
-            
-        # Skip categorical columns
-        if pd.api.types.is_categorical_dtype(df[col]):
-            continue
-            
-        # For string columns, consider converting to categorical if few unique values
-        if pd.api.types.is_object_dtype(df[col]):
-            num_unique = df[col].nunique()
-            num_total = len(df)
-            if num_unique / num_total < 0.5:  # If less than 50% unique values
-                df[col] = df[col].astype('category')
-            continue
-        
-        # For numeric columns
-        if pd.api.types.is_numeric_dtype(df[col]):
-            c_min = df[col].min()
-            c_max = df[col].max()
-            
-            # For integers
-            if pd.api.types.is_integer_dtype(df[col]):
-                if c_min > np.iinfo(np.int8).min and c_max < np.iinfo(np.int8).max:
-                    df[col] = df[col].astype(np.int8)
-                elif c_min > np.iinfo(np.int16).min and c_max < np.iinfo(np.int16).max:
-                    df[col] = df[col].astype(np.int16)
-                elif c_min > np.iinfo(np.int32).min and c_max < np.iinfo(np.int32).max:
-                    df[col] = df[col].astype(np.int32)
-            # For floats
-            else:
-                if c_min > np.finfo(np.float16).min and c_max < np.finfo(np.float16).max:
-                    df[col] = df[col].astype(np.float16)
-                elif c_min > np.finfo(np.float32).min and c_max < np.finfo(np.float32).max:
-                    df[col] = df[col].astype(np.float32)
-    
-    end_mem = df.memory_usage(deep=True).sum() / 1024**2
-    print(f"Memory usage after optimization is: {end_mem:.2f} MB")
-    print(f"Decreased by {100 * (start_mem - end_mem) / start_mem:.1f}%")
-    
-    return df
-
-
-def preprocess_rankings_with_gaps(rankings_df, max_gap_days=5000):
-    """
-    For each player, insert NaN rows for gaps in ranking data that exceed max_gap_days.
-    
-    Args:
-        rankings_df: DataFrame containing ranking data
-        max_gap_days: Maximum allowed gap in days before inserting NaN
-        
-    Returns:
-        DataFrame with NaN values inserted for large gaps
-    """
-    print("Preprocessing rankings data to insert NaN for gaps...")
-    
-    # Create a copy to avoid modifying the original
-    processed_df = rankings_df.copy()
-    
-    # Get unique player IDs
-    player_ids = processed_df['player_id'].unique()
-    
-    # List to store DataFrames for each player (with gaps filled)
-    player_dfs = []
-    
-    for player_id in player_ids:
-        # Get data for this player
-        player_data = processed_df[processed_df['player_id'] == player_id].sort_values('ranking_date')
-        
-        if len(player_data) <= 1:
-            # No gaps to fill if only one or zero records
-            player_dfs.append(player_data)
-            continue
-        
-        # Calculate date differences
-        player_data['date_diff'] = player_data['ranking_date'].diff().dt.days
-        
-        # Find gaps larger than max_gap_days
-        gap_indices = player_data[player_data['date_diff'] > max_gap_days].index
-        
-        if len(gap_indices) == 0:
-            # No large gaps for this player
-            player_dfs.append(player_data.drop(columns=['date_diff']))
-            continue
-        
-        # For each large gap, insert a NaN row
-        rows_to_add = []
-        
-        for idx in gap_indices:
-            # Get the dates before and after the gap
-            prev_date = player_data.loc[player_data.index[player_data.index.get_loc(idx)-1], 'ranking_date']
-            curr_date = player_data.loc[idx, 'ranking_date']
-            
-            # Calculate a date in the middle of the gap
-            gap_middle_date = prev_date + (curr_date - prev_date) / 2
-            
-            # Create a new row with NaN rank
-            new_row = {
-                'player_id': player_id,
-                'ranking_date': gap_middle_date,
-                'rank': np.nan,
-                'date_diff': np.nan
-            }
-            rows_to_add.append(new_row)
-        
-        # Add the new rows to the player's data
-        for row in rows_to_add:
-            player_data = pd.concat([player_data, pd.DataFrame([row])], ignore_index=True)
-        
-        # Sort again by date and drop the date_diff column
-        player_data = player_data.sort_values('ranking_date').drop(columns=['date_diff'])
-        
-        # Add to the list of processed player DataFrames
-        player_dfs.append(player_data)
-    
-    # Combine all player DataFrames
-    result_df = pd.concat(player_dfs, ignore_index=True)
-    
-    print(f"Added {len(result_df) - len(rankings_df)} NaN rows for gaps > {max_gap_days} days")
-    
-    return result_df

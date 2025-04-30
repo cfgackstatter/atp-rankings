@@ -47,3 +47,6 @@ npm-debug.log
 # Ignore Windows Zone.Identifier files
 *Zone.Identifier
 **/*Zone.Identifier
+
+# Test Notebook
+Test.ipynb

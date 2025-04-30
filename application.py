@@ -422,7 +422,7 @@ def update_graph(selected_player_ids, x_axis_type):
             min_date = min(all_x_values)
             max_date = max(all_x_values)
             date_range = max_date - min_date
-            padding = pd.Timedelta(days=int(date_range.days * 0.05))  # 5% padding
+            padding = pd.Timedelta(days=int(date_range.days * 0.01))  # 1% padding
             fig.update_xaxes(
                 range=[min_date - padding, max_date + padding]  # Add padding
             )
