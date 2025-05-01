@@ -393,6 +393,41 @@ def update_graph(selected_player_ids, x_axis_type):
                 hovertemplate='<b>%{fullData.name}</b><br>Rank: %{y}<extra></extra>',
                 connectgaps=False
             ))
+
+        if not player_data['rank'].isnull().all():
+            best_rank = player_data['rank'].min()
+            # Get the first occurrence of the best rank
+            best_row = player_data[player_data['rank'] == best_rank].iloc[0]
+            if x_axis_type == 'age':
+                best_x = best_row['age']
+                best_x_label = f"{best_x:.2f}"
+            else:
+                best_x = best_row['ranking_date']
+                best_x_label = best_x.strftime('%Y-%m-%d')
+            best_y = best_row['rank']
+
+            # Add a marker for the first time the best rank was reached
+            fig.add_trace(go.Scatter(
+                x=[best_x],
+                y=[best_y],
+                mode='markers+text',
+                marker=dict(
+                    size=10,
+                    symbol='star',
+                    color=colors[i % len(colors)],
+                    line=dict(width=2, color='black')
+                ),
+                text=[f"#{int(best_y)}"],
+                textposition="top center",
+                textfont=dict(
+                    color=colors[i % len(colors)],  # <-- Set your desired color here
+                    size=10,                        # (optional) set text size
+                    family="Arial"                  # (optional) set font family
+                ),
+                name=f"{player_name} Best",
+                showlegend=False,
+                hovertemplate=f"First reached #{int(best_y)}<br>{'Age' if x_axis_type == 'age' else 'Date'}: {best_x_label}<extra></extra>"
+            ))
     
     # Set up layout
     if x_axis_type == 'age':
