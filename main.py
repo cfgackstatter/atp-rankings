@@ -8,6 +8,7 @@ from src.data_loader import load_players, load_rankings, find_player_by_name
 from src.visualizer import plot_player_rankings
 from src.atp_scraper_utils import scrape_atp_rankings_raw
 from src.atp_scraper import map_and_combine_raw_files
+from src.atp_tournament_scraper import update_tournament_parquet
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -60,6 +61,10 @@ def main():
         # Update combined parquet
         load_rankings(force_download=True)
         logger.info("Done updating ATP 2025 rankings.")
+        # Scrape tournaments for all years and types you want:
+        years = list(range(1970, datetime.now().year + 1))
+        tournament_types = ['gs', 'atp', 'ch', 'fu']
+        update_tournament_parquet(years, tournament_types)
         return
     
     # Load player data

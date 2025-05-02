@@ -26,6 +26,13 @@ players_df = load_players()
 print("Loading rankings data...")
 rankings_df = load_rankings(fill_gaps=True, max_gap_days=180)
 
+# Load tournament data at startup
+try:
+    tournaments_df = pd.read_parquet("data/cache/atp_tournaments.parquet")
+except Exception as e:
+    print("Could not load tournaments parquet:", e)
+    tournaments_df = pd.DataFrame()
+
 # Remove players who never had a ranking
 ranked_player_ids = set(rankings_df['player_id'].unique())
 print(f"Removed {len(players_df) - len(players_df[players_df['player_id'].isin(ranked_player_ids)])} players who never had a ranking")
@@ -403,7 +410,7 @@ def update_graph(selected_player_ids, x_axis_type):
                 best_x_label = f"{best_x:.2f}"
             else:
                 best_x = best_row['ranking_date']
-                best_x_label = best_x.strftime('%Y-%m-%d')
+                best_x_label = best_x.strftime('%b %d, %Y')
             best_y = best_row['rank']
 
             # Add a marker for the first time the best rank was reached
@@ -428,6 +435,63 @@ def update_graph(selected_player_ids, x_axis_type):
                 showlegend=False,
                 hovertemplate=f"First reached #{int(best_y)}<br>{'Age' if x_axis_type == 'age' else 'Date'}: {best_x_label}<extra></extra>"
             ))
+
+        # --- Tournament win markers ---
+        if not tournaments_df.empty:
+            # Find tournaments this player won (singles)
+            wins = tournaments_df[
+                tournaments_df['singles_winner_names'].apply(lambda winner: player_info['first_name'] + ' ' + player_info['last_name'] in winner)
+            ]
+            for _, win in wins.iterrows():
+                # Use end date for x-axis, or skip if missing
+                end_date = win.get('end_date')
+                if pd.isnull(end_date):
+                    continue
+                # Tournament info for hover
+                tournament_name = win.get('tournament_name', '')
+                venue = win.get('venue', '')
+                # Map type code to label
+                type_map = {'gs': 'Grand Slam', 'atp': 'ATP Tour', 'ch': 'Challenger Tour', 'fu': 'ITF Tour'}
+                marker_map = {'gs': 12, 'atp': 10, 'ch': 8, 'fu': 6}
+                ttype = type_map.get(win.get('tournament_type', ''), win.get('tournament_type', ''))
+                marker_size = marker_map.get(win.get('tournament_type', ''), 10)
+                # X-axis value
+                if x_axis_type == 'age':
+                    # Get player's birth date
+                    if player_info is not None and 'birth_date' in player_info and pd.notna(player_info['birth_date']):
+                        birth_date = pd.to_datetime(player_info['birth_date'])
+                        win_age = (pd.to_datetime(end_date) - birth_date).days / 365.25
+                        win_x = win_age
+                    else:
+                        continue  # Can't plot on age axis without birth date
+                else:
+                    win_x = pd.to_datetime(end_date)
+                # Y value: get player's rank at that date (or nearest previous date)
+                rank_row = player_data[player_data['ranking_date'] <= pd.to_datetime(end_date)].tail(1)
+                win_y = rank_row['rank'].values[0] if not rank_row.empty else None
+                if win_y is None or pd.isnull(win_y):
+                    continue
+                # Add marker
+                fig.add_trace(go.Scatter(
+                    x=[win_x],
+                    y=[win_y],
+                    mode='markers',
+                    marker=dict(
+                        size=marker_size,
+                        symbol='diamond',
+                        color=colors[i % len(colors)],
+                        line=dict(width=2, color='black')
+                    ),
+                    name=f"{player_name} Tournament Win",
+                    showlegend=False,
+                    hovertemplate=(
+                        f"<b>{tournament_name}</b><br>"
+                        f"Venue: {venue}<br>"
+                        f"Type: {ttype}<br>"
+                        f"{'Age' if x_axis_type == 'age' else 'Date'}: %{{x}}<br>"
+                        "<extra></extra>"
+                    )
+                ))
     
     # Set up layout
     if x_axis_type == 'age':
@@ -474,6 +538,7 @@ def update_graph(selected_player_ids, x_axis_type):
                     dict(count=6, label="6m", step="month", stepmode="backward"),
                     dict(count=1, label="YTD", step="year", stepmode="todate"),
                     dict(count=1, label="1y", step="year", stepmode="backward"),
+                    dict(count=3, label="3y", step="year", stepmode="backward"),
                     dict(step="all")
                 ])
             )
