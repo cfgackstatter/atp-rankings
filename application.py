@@ -13,13 +13,13 @@ from src.data_loader import interpolate_rank_at_date
 
 # Initialize the Dash app
 app = dash.Dash(__name__,
-                title='ATP Ranking Chart',
+                title='ATP RankTracker',
                 assets_folder='static',
                 assets_url_path='static',
                 suppress_callback_exceptions=True,
                 use_pages=False,
+                external_stylesheets=[dbc.themes.BOOTSTRAP],
                 meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1"}])
-#app.enable_dev_tools(debug=True, dev_tools_props_check=False)
 application = app.server
 
 # Load data at startup
@@ -241,21 +241,42 @@ app.layout = html.Div([
             html.H1("ATP RankTracker", style={'margin': '0', 'fontSize': '24px'})
         ], style={'display': 'flex', 'alignItems': 'center'}),
 
-        # Right side: X-Axis toggle
+        # Right side: X-Axis toggle and Tournament Types
         html.Div([
             # X-Axis toggle in header
-            html.Label("X-Axis:", className="control-label-inline"),
-            dcc.RadioItems(
-                id='x-axis-toggle',
-                options=[
-                    {'label': 'Date', 'value': 'date'},
-                    {'label': 'Age', 'value': 'age'}
-                ],
-                value='date',
-                labelStyle={'display': 'inline-block', 'marginRight': '15px', 'cursor': 'pointer'},
-                className="radio-group-inline"
-            ),
-        ], style={'marginLeft': 'auto'})
+            html.Div([
+                html.Label("X-Axis:", className="control-label-inline"),
+                html.Br(),
+                dcc.RadioItems(
+                    id='x-axis-toggle',
+                    options=[
+                        {'label': 'Date', 'value': 'date'},
+                        {'label': 'Age', 'value': 'age'}
+                    ],
+                    value='date',
+                    labelStyle={'display': 'inline-block', 'marginRight': '15px', 'cursor': 'pointer'},
+                    className="radio-group-inline"
+                ),
+            ], style={'marginRight': '20px'}),
+            
+            # Tournament Types filter
+            html.Div([
+                html.Label("Tournaments:", className="control-label-inline"),
+                html.Br(),
+                dcc.Checklist(
+                    id='tournament-types',
+                    options=[
+                        {'label': 'Grand Slam', 'value': 'gs'},
+                        {'label': 'ATP Tour', 'value': 'atp'},
+                        {'label': 'Challenger', 'value': 'ch'},
+                        {'label': 'ITF Tour', 'value': 'fu'},
+                    ],
+                    value=['gs', 'atp'],  # Default selection
+                    inline=True,
+                    className="checklist-inline"
+                ),
+            ]),
+        ], style={'marginLeft': 'auto', 'display': 'flex', 'alignItems': 'center'})
     ], className="header-container-compact", style={
         'display': 'flex', 
         'justifyContent': 'space-between',
@@ -305,9 +326,10 @@ app.layout = html.Div([
 @app.callback(
     Output('rankings-graph', 'figure'),
     [Input('player-dropdown', 'value'),
-     Input('x-axis-toggle', 'value')]
+     Input('x-axis-toggle', 'value'),
+     Input('tournament-types', 'value')]
 )
-def update_graph(selected_atp_ids, x_axis_type):
+def update_graph(selected_atp_ids, x_axis_type, tournament_types):
     # Handle no selection
     if not selected_atp_ids:
         # Create empty figure with message
@@ -447,74 +469,75 @@ def update_graph(selected_atp_ids, x_axis_type):
         if not tournaments_df.empty:
             # Find tournaments this player won (singles)
             for _, win in tournaments_df.iterrows():
-                # Check if this player won by matching atp_id in URLs
-                winner_urls = win.get('singles_winner_urls', [])
-                if isinstance(winner_urls, list) and any(atp_id in url for url in winner_urls):
-                    # Use end date for x-axis, or skip if missing
-                    end_date = win.get('end_date')
-                    if pd.isnull(end_date):
-                        continue
-
-                    # Tournament info for hover
-                    tournament_name = win.get('tournament_name', '')
-                    venue = win.get('venue', '')
-
-                    # Map type code to label and marker size
-                    type_map = {'gs': 'Grand Slam', 'atp': 'ATP Tour', 'ch': 'Challenger Tour', 'fu': 'ITF Tour'}
-                    marker_map = {'gs': 12, 'atp': 10, 'ch': 8, 'fu': 6}
-                    ttype = type_map.get(win.get('tournament_type', ''), win.get('tournament_type', ''))
-                    marker_size = marker_map.get(win.get('tournament_type', ''), 10)
-
-                    # X-axis value depends on plot type
-                    if x_axis_type == 'age':
-                        # For age plots, we need birth date
-                        birth_date = None
-                        if player_info is not None and 'dob' in player_info and pd.notna(player_info['dob']):
-                            birth_date = pd.to_datetime(player_info['dob'])
-
-                        if birth_date is None:
-                            # Skip this tournament for age plots if no birth date
+                if win.get('tournament_type', '') in tournament_types:
+                    # Check if this player won by matching atp_id in URLs
+                    winner_urls = win.get('singles_winner_urls', [])
+                    if isinstance(winner_urls, list) and any(atp_id in url for url in winner_urls):
+                        # Use end date for x-axis, or skip if missing
+                        end_date = win.get('end_date')
+                        if pd.isnull(end_date):
                             continue
 
-                        win_age = (pd.to_datetime(end_date) - birth_date).days / 365.25
-                        win_x = win_age
-                    else:
-                        # For date plots, we don't need birth date
-                        win_x = pd.to_datetime(end_date)
+                        # Tournament info for hover
+                        tournament_name = win.get('tournament_name', '')
+                        venue = win.get('venue', '')
 
-                    # Y value: get player's rank at that date (or nearest previous date)
-                    tournament_end_date = pd.to_datetime(end_date)
-                    if tournament_end_date <= player_data['ranking_date'].max() and tournament_end_date >= player_data['ranking_date'].min():
-                        win_y = interpolate_rank_at_date(player_data, tournament_end_date)
-                    else:
-                        # Fallback to nearest rank if outside ranking date range
-                        rank_row = player_data[player_data['ranking_date'] <= tournament_end_date].tail(1)
-                        win_y = rank_row['rank'].values[0] if not rank_row.empty else None
+                        # Map type code to label and marker size
+                        type_map = {'gs': 'Grand Slam', 'atp': 'ATP Tour', 'ch': 'Challenger Tour', 'fu': 'ITF Tour'}
+                        marker_map = {'gs': 12, 'atp': 10, 'ch': 8, 'fu': 6}
+                        ttype = type_map.get(win.get('tournament_type', ''), win.get('tournament_type', ''))
+                        marker_size = marker_map.get(win.get('tournament_type', ''), 10)
 
-                    if win_y is None or pd.isnull(win_y):
-                        continue
+                        # X-axis value depends on plot type
+                        if x_axis_type == 'age':
+                            # For age plots, we need birth date
+                            birth_date = None
+                            if player_info is not None and 'dob' in player_info and pd.notna(player_info['dob']):
+                                birth_date = pd.to_datetime(player_info['dob'])
 
-                    # Add marker
-                    fig.add_trace(go.Scatter(
-                        x=[win_x],
-                        y=[win_y],
-                        mode='markers',
-                        marker=dict(
-                            size=marker_size,
-                            symbol='diamond',
-                            color=colors[i % len(colors)],
-                            line=dict(width=2, color='black')
-                        ),
-                        name=f"{player_name} Tournament Win",
-                        showlegend=False,
-                        hovertemplate=(
-                            f"{tournament_name}<br>" +
-                            f"Venue: {venue}<br>"
-                            f"Type: {ttype}<br>"
-                            f"{'Age' if x_axis_type == 'age' else 'Date'}: %{{x}}<br>"
-                            "<extra></extra>"
-                        )
-                    ))
+                            if birth_date is None:
+                                # Skip this tournament for age plots if no birth date
+                                continue
+
+                            win_age = (pd.to_datetime(end_date) - birth_date).days / 365.25
+                            win_x = win_age
+                        else:
+                            # For date plots, we don't need birth date
+                            win_x = pd.to_datetime(end_date)
+
+                        # Y value: get player's rank at that date (or nearest previous date)
+                        tournament_end_date = pd.to_datetime(end_date)
+                        if tournament_end_date <= player_data['ranking_date'].max() and tournament_end_date >= player_data['ranking_date'].min():
+                            win_y = interpolate_rank_at_date(player_data, tournament_end_date)
+                        else:
+                            # Fallback to nearest rank if outside ranking date range
+                            rank_row = player_data[player_data['ranking_date'] <= tournament_end_date].tail(1)
+                            win_y = rank_row['rank'].values[0] if not rank_row.empty else None
+
+                        if win_y is None or pd.isnull(win_y):
+                            continue
+
+                        # Add marker
+                        fig.add_trace(go.Scatter(
+                            x=[win_x],
+                            y=[win_y],
+                            mode='markers',
+                            marker=dict(
+                                size=marker_size,
+                                symbol='diamond',
+                                color=colors[i % len(colors)],
+                                line=dict(width=2, color='black')
+                            ),
+                            name=f"{player_name} Tournament Win",
+                            showlegend=False,
+                            hovertemplate=(
+                                f"{tournament_name}<br>" +
+                                f"Venue: {venue}<br>"
+                                f"Type: {ttype}<br>"
+                                f"{'Age' if x_axis_type == 'age' else 'Date'}: %{{x}}<br>"
+                                "<extra></extra>"
+                            )
+                        ))
     
     # Set up layout
     if x_axis_type == 'age':
@@ -577,18 +600,18 @@ def update_graph(selected_atp_ids, x_axis_type):
         plot_bgcolor='#ffffff',
         paper_bgcolor='#ffffff',
         hovermode='x',
-        showlegend=True,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1,
-            bgcolor='rgba(255,255,255,0.9)',
-            bordercolor='rgba(0,0,0,0.1)',
-            borderwidth=1
-        ),
-        margin=dict(l=50, r=30, t=80, b=50),
+        showlegend=False,
+        # legend=dict(
+        #     orientation="h",
+        #     yanchor="bottom",
+        #     y=1.02,
+        #     xanchor="right",
+        #     x=1,
+        #     bgcolor='rgba(255,255,255,0.9)',
+        #     bordercolor='rgba(0,0,0,0.1)',
+        #     borderwidth=1
+        # ),
+        margin=dict(l=10, r=10, t=30, b=20),
         font=dict(family="Segoe UI, Arial, sans-serif")
     )
 
@@ -653,4 +676,4 @@ def update_dropdown_options(search_value, current_values):
 
 
 if __name__ == '__main__':
-    application.run()
+    application.run(debug=True)

@@ -52,7 +52,7 @@ body {
 /* Chart container */
 .chart-container {
     background-color: #fff;
-    padding: 20px;
+    padding: 5px !important;
     border-radius: 0 0 8px 8px;
     box-shadow: 0 2px 10px rgba(0,0,0,0.05);
     margin-bottom: 15px;
@@ -61,7 +61,13 @@ body {
 }
 
 .main-chart {
+    margin: 0 !important;
     height: 100%;
+}
+
+/* Remove whitespace around plotly graphs */
+.js-plotly-plot .plotly .main-svg {
+    padding: 0 !important;
 }
 
 /* Footer styling */
@@ -104,3 +110,75 @@ body {
         height: calc(100vh - 400px);
     }
 }
+
+/* Style for selected values in dropdown to match chart colors */
+.Select--multi .Select-value:nth-of-type(1) {
+    background-color: #1f77b4;
+    border-color: #1f77b4;
+    color: white;
+  }
+  
+  .Select--multi .Select-value:nth-of-type(2) {
+    background-color: #ff7f0e;
+    border-color: #ff7f0e;
+    color: white;
+  }
+  
+  .Select--multi .Select-value:nth-of-type(3) {
+    background-color: #2ca02c;
+    border-color: #2ca02c;
+    color: white;
+  }
+  
+  .Select--multi .Select-value:nth-of-type(4) {
+    background-color: #d62728;
+    border-color: #d62728;
+    color: white;
+  }
+  
+  .Select--multi .Select-value:nth-of-type(5) {
+    background-color: #9467bd;
+    border-color: #9467bd;
+    color: white;
+  }
+  
+  .Select--multi .Select-value:nth-of-type(6) {
+    background-color: #8c564b;
+    border-color: #8c564b;
+    color: white;
+  }
+  
+  .Select--multi .Select-value:nth-of-type(7) {
+    background-color: #e377c2;
+    border-color: #e377c2;
+    color: white;
+  }
+  
+  .Select--multi .Select-value:nth-of-type(8) {
+    background-color: #7f7f7f;
+    border-color: #7f7f7f;
+    color: white;
+  }
+  
+  .Select--multi .Select-value:nth-of-type(9) {
+    background-color: #bcbd22;
+    border-color: #bcbd22;
+    color: white;
+  }
+  
+  .Select--multi .Select-value:nth-of-type(10) {
+    background-color: #17becf;
+    border-color: #17becf;
+    color: white;
+  }
+  
+  /* Make the X button white for better visibility */
+  .Select--multi .Select-value-icon {
+    color: white;
+    border-right-color: rgba(255, 255, 255, 0.3);
+  }
+  
+  .Select--multi .Select-value-icon:hover {
+    background-color: rgba(0, 0, 0, 0.1);
+    color: white;
+  }
