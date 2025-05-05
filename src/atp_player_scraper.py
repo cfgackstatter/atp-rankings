@@ -165,7 +165,7 @@ def update_players_from_rankings(
         if priority_ids:
             player_urls_df = rankings_df[rankings_df['atp_id'].isin(priority_ids)].drop_duplicates('atp_id')
             player_urls_with_ids = [(
-                f"https://www.atptour.com/en/players/{row['atp_name']}/{row['atp_id']}/overview",
+                f"https://www.atptour.com/en/players/{row['atp_name'].replace('.', '')}/{row['atp_id']}/overview",
                 row['atp_id']
             ) for _, row in player_urls_df.iterrows() if not pd.isna(row['atp_name'])]
         else:
@@ -174,7 +174,7 @@ def update_players_from_rankings(
         # Generate all player URLs with IDs
         player_urls_df = rankings_df.drop_duplicates('atp_id')
         player_urls_with_ids = [(
-            f"https://www.atptour.com/en/players/{row['atp_name']}/{row['atp_id']}/overview",
+            f"https://www.atptour.com/en/players/{row['atp_name'].replace('.', '')}/{row['atp_id']}/overview",
             row['atp_id']
         ) for _, row in player_urls_df.iterrows() if not pd.isna(row['atp_name'])]
     

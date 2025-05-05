@@ -152,9 +152,12 @@ def preprocess_all(max_gap_days: int = 180) -> None:
         
         # Insert NaN for gaps greater than max_gap_days
         rankings = insert_nan_for_gaps(rankings, max_gap_days)
+
+        # Convert rank column to Int16 (can handle both integers and NaN)
+        rankings['rank'] = rankings['rank'].astype('Int16')
         
         # Save processed rankings data
-        rankings.to_parquet(rankings_out_path, compression='gzip', index=False)
+        rankings.to_parquet(rankings_out_path, compression='snappy', index=False)
 
     # --- TOURNAMENTS PREPROCESSING ---
     tournament_files = glob.glob("data/raw/tournaments/*/tournaments_*_raw.csv")
@@ -186,7 +189,7 @@ def preprocess_all(max_gap_days: int = 180) -> None:
                 tournaments[date_col] = pd.to_datetime(tournaments[date_col])
         
         # Save processed tournament data
-        tournaments.to_parquet(tournaments_out_path, compression='gzip', index=False)
+        tournaments.to_parquet(tournaments_out_path, compression='snappy', index=False)
 
     # --- PLAYERS PREPROCESSING ---
     players_raw_path = "data/raw/players/players_raw.parquet"
@@ -212,4 +215,4 @@ def preprocess_all(max_gap_days: int = 180) -> None:
         players = players[keep_cols].drop_duplicates()
         
         # Save processed player data
-        players.to_parquet(players_out_path, compression='gzip', index=False)
+        players.to_parquet(players_out_path, compression='snappy', index=False)
