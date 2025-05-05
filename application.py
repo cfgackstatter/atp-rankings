@@ -8,7 +8,8 @@ from dash.exceptions import PreventUpdate
 from functools import lru_cache
 
 # Import data loading functions
-from src.data_loader import load_players, load_rankings
+from src.data_loader import load_players, load_rankings, load_tournaments
+from src.data_loader import interpolate_rank_at_date
 
 # Initialize the Dash app
 app = dash.Dash(__name__,
@@ -18,126 +19,166 @@ app = dash.Dash(__name__,
                 suppress_callback_exceptions=True,
                 use_pages=False,
                 meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1"}])
-app.enable_dev_tools(debug=True, dev_tools_props_check=False)
+#app.enable_dev_tools(debug=True, dev_tools_props_check=False)
 application = app.server
 
 # Load data at startup
 print("Loading player data...")
-players_df = load_players()
+try:
+   players_df = load_players()
+except FileNotFoundError:
+   print("No player data found.")
+   players_df = pd.DataFrame(columns=['atp_id', 'full_name', 'country_code', 'dob'])
 
 print("Loading rankings data...")
-rankings_df = load_rankings(fill_gaps=True, max_gap_days=180)
+rankings_df = load_rankings()
 
-# Load tournament data at startup
-try:
-    tournaments_df = pd.read_parquet("data/cache/atp_tournaments.parquet")
-except Exception as e:
-    print("Could not load tournaments parquet:", e)
-    tournaments_df = pd.DataFrame()
-
-# Remove players who never had a ranking
-ranked_player_ids = set(rankings_df['player_id'].unique())
-print(f"Removed {len(players_df) - len(players_df[players_df['player_id'].isin(ranked_player_ids)])} players who never had a ranking")
-players_df = players_df[players_df['player_id'].isin(ranked_player_ids)].copy()
+print("Loading tournaments data...")
+tournaments_df = load_tournaments()
 
 # Create a function to generate player options once
-def generate_player_options(players_df):
+def generate_player_options(players_df, rankings_df):
     options = []
-    for _, player in players_df.iterrows():
-        # Handle NaN values safely
-        first_name = "" if pd.isna(player['first_name']) else player['first_name']
-        last_name = "" if pd.isna(player['last_name']) else player['last_name']
-        player_id = player['player_id']
-        
-        # Skip players with empty names
-        if first_name == '' and last_name == '':
-            continue
-            
-        # Format display name as "Last Name, First Name"
-        display_name = f"{last_name}, {first_name}"
 
-        # Add country code if available
-        country_code = "" if pd.isna(player.get('country_code', '')) else player.get('country_code', '')
-        if country_code:
-            display_name += f" ({country_code})"
+    # Get all known atp_ids from players_df
+    known_atp_ids = set(players_df['atp_id'].unique()) if not players_df.empty else set()
 
-        # Add birth year if available
-        birth_date = player.get('birth_date')
-        birth_year = None
-        if birth_date and not pd.isna(birth_date):
-            try:
-                birth_year = pd.to_datetime(birth_date).year
-                display_name += f" - *{birth_year}"
-            except:
-                pass
+    # Process all players from rankings_df
+    if not rankings_df.empty:
+        # Get unique players from rankings
+        unique_players = rankings_df[['atp_id', 'atp_name']].drop_duplicates()
 
-        options.append({
-            'label': display_name,
-            'value': player_id,
-            'search': f"{first_name} {last_name} {first_name} {country_code}"
-        })
+        for _, player in unique_players.iterrows():
+            atp_id = player['atp_id']
+            atp_name = player['atp_name']
+            search_terms = []
+            if atp_name is not None and not pd.isna(atp_name):
+                search_terms = [atp_name.replace('-', ' ').lower()]
+            else:
+                search_terms = []
+
+            # If player exists in players_df, use that data
+            if atp_id in known_atp_ids:
+                player_info = players_df[players_df['atp_id'] == atp_id].iloc[0]
+
+                # Use full_name if available, otherwise use atp_name
+                full_name = player_info.get('full_name', '')
+                if pd.isna(full_name) or not full_name:
+                    # Fallback to atp_name
+                    display_name = atp_name.replace('-', ' ').title()
+                else:
+                    display_name = full_name
+                    search_terms.append(full_name.lower())
+
+                # Add country code if available
+                country_code = player_info.get('country_code', '')
+                if country_code and not pd.isna(country_code):
+                    display_name += f" ({country_code})"
+                    search_terms.append(country_code.lower())
+
+                # Add birth year if available
+                dob = player_info.get('dob')
+                if dob and not pd.isna(dob):
+                    try:
+                        birth_year = pd.to_datetime(dob).year
+                        display_name += f" - *{birth_year}"
+                    except:
+                        pass
+
+            # If player doesn't exist in players_df, use atp_name as fallback
+            else:
+                if not atp_name or pd.isna(atp_name):
+                    continue
+                
+                # Use atp_name as display name (with dashes replaced by spaces)
+                display_name = atp_name.replace('-', ' ').title()
+                search_terms.append(atp_name.replace('-', ' ').lower())
+
+            options.append({
+                'label': display_name,
+                'value': atp_id,
+                'search': ' '.join(search_terms)  # Include all search terms
+            })
     
-    # Sort options by last name
+    # Sort options by display name
     options.sort(key=lambda x: x['label'])
     return options
 
 # Generate options once at startup
-player_options = generate_player_options(players_df)
+player_options = generate_player_options(players_df, rankings_df)
 
 # After loading data, create a search index
 player_search_index = {}
-for _, player in players_df.iterrows():
-    player_id = player['player_id']
-    first_name = "" if pd.isna(player['first_name']) else str(player['first_name']).lower()
-    last_name = "" if pd.isna(player['last_name']) else str(player['last_name']).lower()
-    
-    # Skip players with empty names
-    if first_name == '' and last_name == '':
+
+# First try using players_df
+if not players_df.empty:
+    for _, player in players_df.iterrows():
+        atp_id = player['atp_id']
+        full_name = "" if pd.isna(player.get('full_name', '')) else str(player.get('full_name', '')).lower()
+        
+        # Skip players with empty names
+        if not full_name:
+            continue
+            
+        # Add to search index with all possible search terms
+        search_terms = []
+        
+        # Add full name
+        search_terms.append(full_name)
+        
+        # Add each word in the name separately for partial matching
+        name_parts = full_name.split()
+        for part in name_parts:
+            if len(part) > 1:  # Skip very short parts
+                search_terms.append(part)
+        
+        # Add country code if available
+        country_code = player.get('country_code', '')
+        if country_code and not pd.isna(country_code):
+            country_code = country_code.lower()
+            search_terms.append(country_code)
+            
+        # Add to search index with all possible search terms
+        for term in search_terms:
+            if term:
+                if term not in player_search_index:
+                    player_search_index[term] = []
+                player_search_index[term].append(atp_id)
+
+# Always process rankings_df (remove the else)
+unique_players = rankings_df[['atp_id', 'atp_name']].drop_duplicates()
+
+for _, player in unique_players.iterrows():
+    atp_id = player['atp_id']
+
+    # Skip players we already processed from players_df
+    if atp_id in player_search_index.get('atp_id', []):
         continue
 
-    # Add to search index with all possible search terms
-    search_terms = []
-
-    # Add individual names
-    if first_name:
-        search_terms.append(first_name)
-    
-    if last_name:
-        search_terms.append(last_name)
-
-        # Add individual parts of compound last names
-        last_name_parts = last_name.split()
-        if len(last_name_parts) > 1:
-            for part in last_name_parts:
-                if len(part) > 2:  # Avoid indexing very short parts
-                    search_terms.append(part)
-    
-    # Add combined names in different formats
-    if first_name and last_name:
-        search_terms.append(f"{first_name} {last_name}")  # First Last
-        search_terms.append(f"{last_name} {first_name}")  # Last First
-        search_terms.append(f"{last_name}, {first_name}") # Last, First
-
-        # For compound last names, add variations with first name
-        last_name_parts = last_name.split()
-        if len(last_name_parts) > 1:
-            for part in last_name_parts:
-                if len(part) > 2:
-                    search_terms.append(f"{part} {first_name}")  # LastPart First
-                    search_terms.append(f"{first_name} {part}")  # First LastPart
-    
-    # Add country code if available
-    country_code = player.get('country_code', '')
-    if country_code and not pd.isna(country_code):
-        country_code = country_code.lower()
-        search_terms.append(country_code)
+    atp_name = player['atp_name']
+    if not atp_name or pd.isna(atp_name):
+        continue
         
-    # Add to search index with all possible search terms
+    # Format atp_name for search
+    search_name = atp_name.replace('-', ' ').lower()
+    
+    # Add to search index
+    search_terms = []
+    search_terms.append(search_name)
+    
+    # Add each word in the name separately
+    name_parts = search_name.split()
+    for part in name_parts:
+        if len(part) > 1:  # Skip very short parts
+            search_terms.append(part)
+            
+    # Add to search index
     for term in search_terms:
         if term:
             if term not in player_search_index:
                 player_search_index[term] = []
-            player_search_index[term].append(player_id)
+            player_search_index[term].append(atp_id)
+
 
 # Add a cached search function
 @lru_cache(maxsize=1024)
@@ -148,45 +189,42 @@ def search_players(query):
     # Split the query into parts to handle multi-word searches better
     query_parts = query.split()
 
-    # If no exact matches, try starts-with for each term
-    if not matching_ids:
-        for term, ids in player_search_index.items():
-            if term.startswith(query):
-                matching_ids.update(ids)
+    # Try exact matches but don't return immediately
+    for term, ids in player_search_index.items():
+        if query == term:
+            matching_ids.update(ids)
+
+    # Try starts-with matches and add to results
+    for term, ids in player_search_index.items():
+        if term.startswith(query):
+            matching_ids.update(ids)
     
-    # If still no matches, try matching individual parts
-    if not matching_ids and len(query_parts) > 1:
+    # Try matching individual parts
+    if len(query_parts) > 1:
         # For multi-word queries, try to match each part
         potential_matches = {}
-        
         for part in query_parts:
             if len(part) < 3:  # Skip very short parts
                 continue
-                
             for term, ids in player_search_index.items():
                 if part in term.split():
-                    for player_id in ids:
-                        potential_matches[player_id] = potential_matches.get(player_id, 0) + 1
+                    for atp_id in ids:
+                        potential_matches[atp_id] = potential_matches.get(atp_id, 0) + 1
 
         # Find players that match multiple parts of the query
-        for player_id, match_count in potential_matches.items():
-            if match_count >= min(2, len(query_parts)):  # Match at least 2 parts or all parts if fewer
-                matching_ids.add(player_id)
+        for atp_id, match_count in potential_matches.items():
+            if match_count >= min(2, len(query_parts)):
+                matching_ids.add(atp_id)
         
-    # If still no matches, try contains matching
-    if not matching_ids:
-        for term, ids in player_search_index.items():
-            if query in term:
-                matching_ids.update(ids)
+    # Try contains matching
+    for term, ids in player_search_index.items():
+        if query in term:
+            matching_ids.update(ids)
     
-    # If still no matches, try partial matching for longer queries
-    if not matching_ids and len(query) >= 3:
+    # Try partial matching for longer queries
+    if len(query) >= 3:
         for term, ids in player_search_index.items():
-            # Match if at least 70% of the query is in the term
-            if len(query) >= 3 and any(
-                query[:int(len(query)*0.7)] in word 
-                for word in term.split()
-            ):
+            if any(query[:int(len(query)*0.7)] in word for word in term.split()):
                 matching_ids.update(ids)
     
     return matching_ids
@@ -254,16 +292,10 @@ app.layout = html.Div([
         ], className="chart-container"),
 
         # Footer   
+        # Footer
         html.Footer([
             html.P([
-                "Data: ",
-                html.A(
-                    "Jeff Sackmann's tennis_atp", 
-                    href="https://github.com/JeffSackmann/tennis_atp", 
-                    target="_blank",
-                    rel="noopener noreferrer"
-                ),
-                " | License: CC BY-NC-SA 4.0"
+                "ATP RankTracker | Data from ATP Tour"
             ], style={'fontSize': '0.8rem', 'margin': '5px 0'}),
         ], className="footer")
     ], className="main-content"),
@@ -275,43 +307,19 @@ app.layout = html.Div([
     [Input('player-dropdown', 'value'),
      Input('x-axis-toggle', 'value')]
 )
-def update_graph(selected_player_ids, x_axis_type):
+def update_graph(selected_atp_ids, x_axis_type):
     # Handle no selection
-    if not selected_player_ids:
-        # Create empty figure with date range
-        earliest_date = rankings_df['ranking_date'].min()
-        current_date = pd.Timestamp.now()
+    if not selected_atp_ids:
+        # Create empty figure with message
         fig = go.Figure()
-
-        # Update x-axis to show the full date range
-        fig.update_layout(
-            plot_bgcolor='#f8f9fa',
-            paper_bgcolor='#ffffff',
-            xaxis=dict(
-                title='Date',
-                range=[earliest_date, current_date],
-                type='date',
-                gridwidth=1,
-                gridcolor='rgba(0,0,0,0.1)'
-            ),
-            yaxis=dict(
-                title='ATP Ranking',
-                range=[1000, 1],
-                autorange='reversed',
-                gridwidth=1,
-                gridcolor='rgba(0,0,0,0.1)'
-            ),
-            margin=dict(l=50, r=30, t=40, b=20, pad=0)
-        )
-        # Add a helpful annotation
         fig.add_annotation(
             text="Select players from the dropdown above to visualize their ranking history",
-            xref="paper", yref="paper",
-            x=0.5, y=0.5,
-            showarrow=False,
+            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
             font=dict(size=16, color="#666666")
         )
-        
+        # Hide axis values and grid lines
+        fig.update_xaxes(showticklabels=False, showgrid=False, zeroline=False)
+        fig.update_yaxes(showticklabels=False, showgrid=False, zeroline=False)
         return fig
     
     # Create figure
@@ -320,53 +328,50 @@ def update_graph(selected_player_ids, x_axis_type):
     # Colors for different players
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
 
-    # Pre-fetch all player info at once instead of in the loop
+    # Pre-fetch all player info at once
     player_info_dict = {}
-    for player_id in selected_player_ids:
-        player_info = players_df.query(f"player_id == {player_id}")
+    for atp_id in selected_atp_ids:
+        player_info = players_df[players_df['atp_id'] == atp_id]
         if not player_info.empty:
-            player_info_dict[player_id] = player_info.iloc[0]
+            player_info_dict[atp_id] = player_info.iloc[0]
     
     messages = []
     all_x_values = []  # To store all x values for padding calculation
 
-    for i, player_id in enumerate(selected_player_ids):
-        # Use query for faster filtering when possible
-        try:
-            player_data = rankings_df.query(f"player_id == {player_id}")
-        except Exception:
-            # Fall back to boolean indexing if query fails
-            player_data = rankings_df[rankings_df['player_id'] == player_id]
-
+    for i, atp_id in enumerate(selected_atp_ids):
+        # Filter rankings for this player
+        player_data = rankings_df[rankings_df['atp_id'] == atp_id]
+        
         if player_data.empty:
             # Get player name from pre-fetched info
-            player_info = player_info_dict.get(player_id)
+            player_info = player_info_dict.get(atp_id)
             if player_info is not None:
-                first_name = player_info['first_name'] or ""
-                last_name = player_info['last_name'] or ""
-                player_name = f"{first_name} {last_name}".strip()
+                player_name = player_info.get('full_name', '') or f"{player_info.get('first_name', '')} {player_info.get('last_name', '')}".strip()
             else:
-                player_name = f"Player {player_id}"
-                
+                player_name = f"Player {atp_id}"
             messages.append(f"No ranking data found for {player_name}")
             continue
 
-        # Sort once - more efficient than sort_values for single column
+        # Sort by date
         player_data = player_data.sort_values('ranking_date')
 
-        # Get player name from pre-fetched info
-        player_info = player_info_dict.get(player_id)
+        # Get player name
+        player_info = player_info_dict.get(atp_id)
         if player_info is not None:
-            first_name = player_info['first_name'] or ""
-            last_name = player_info['last_name'] or ""
-            player_name = f"{first_name} {last_name}".strip()
+            player_name = player_info.get('full_name', '')
         else:
-            player_name = f"Player {player_id}"
+            # Fallback to atp_name from rankings
+            player_row = rankings_df[rankings_df['atp_id'] == atp_id]
+            if not player_row.empty:
+                atp_name = player_row['atp_name'].iloc[0]
+                player_name = atp_name.replace('-', ' ').title()
+            else:
+                player_name = f"Player {atp_id}"
             
         if x_axis_type == 'age':
             # Check if we have player info and birth date
-            if player_info is not None and 'birth_date' in player_info and pd.notna(player_info['birth_date']):
-                birth_date = pd.to_datetime(player_info['birth_date'])
+            if player_info is not None and 'dob' in player_info and pd.notna(player_info['dob']):
+                birth_date = pd.to_datetime(player_info['dob'])
                 
                 # Vectorized age calculation - more efficient
                 player_data = player_data.copy()  # Avoid SettingWithCopyWarning
@@ -438,62 +443,78 @@ def update_graph(selected_player_ids, x_axis_type):
                 hovertemplate=f"First reached #{int(best_y)}<br>{'Age' if x_axis_type == 'age' else 'Date'}: {best_x_label}<extra></extra>"
             ))
 
-        # --- Tournament win markers ---
+        # Tournament win markers
         if not tournaments_df.empty:
             # Find tournaments this player won (singles)
-            wins = tournaments_df[
-                tournaments_df['singles_winner_names'].apply(lambda winner: player_info['first_name'] + ' ' + player_info['last_name'] in winner)
-            ]
-            for _, win in wins.iterrows():
-                # Use end date for x-axis, or skip if missing
-                end_date = win.get('end_date')
-                if pd.isnull(end_date):
-                    continue
-                # Tournament info for hover
-                tournament_name = win.get('tournament_name', '')
-                venue = win.get('venue', '')
-                # Map type code to label
-                type_map = {'gs': 'Grand Slam', 'atp': 'ATP Tour', 'ch': 'Challenger Tour', 'fu': 'ITF Tour'}
-                marker_map = {'gs': 12, 'atp': 10, 'ch': 8, 'fu': 6}
-                ttype = type_map.get(win.get('tournament_type', ''), win.get('tournament_type', ''))
-                marker_size = marker_map.get(win.get('tournament_type', ''), 10)
-                # X-axis value
-                if x_axis_type == 'age':
-                    # Get player's birth date
-                    if player_info is not None and 'birth_date' in player_info and pd.notna(player_info['birth_date']):
-                        birth_date = pd.to_datetime(player_info['birth_date'])
+            for _, win in tournaments_df.iterrows():
+                # Check if this player won by matching atp_id in URLs
+                winner_urls = win.get('singles_winner_urls', [])
+                if isinstance(winner_urls, list) and any(atp_id in url for url in winner_urls):
+                    # Use end date for x-axis, or skip if missing
+                    end_date = win.get('end_date')
+                    if pd.isnull(end_date):
+                        continue
+
+                    # Tournament info for hover
+                    tournament_name = win.get('tournament_name', '')
+                    venue = win.get('venue', '')
+
+                    # Map type code to label and marker size
+                    type_map = {'gs': 'Grand Slam', 'atp': 'ATP Tour', 'ch': 'Challenger Tour', 'fu': 'ITF Tour'}
+                    marker_map = {'gs': 12, 'atp': 10, 'ch': 8, 'fu': 6}
+                    ttype = type_map.get(win.get('tournament_type', ''), win.get('tournament_type', ''))
+                    marker_size = marker_map.get(win.get('tournament_type', ''), 10)
+
+                    # X-axis value depends on plot type
+                    if x_axis_type == 'age':
+                        # For age plots, we need birth date
+                        birth_date = None
+                        if player_info is not None and 'dob' in player_info and pd.notna(player_info['dob']):
+                            birth_date = pd.to_datetime(player_info['dob'])
+
+                        if birth_date is None:
+                            # Skip this tournament for age plots if no birth date
+                            continue
+
                         win_age = (pd.to_datetime(end_date) - birth_date).days / 365.25
                         win_x = win_age
                     else:
-                        continue  # Can't plot on age axis without birth date
-                else:
-                    win_x = pd.to_datetime(end_date)
-                # Y value: get player's rank at that date (or nearest previous date)
-                rank_row = player_data[player_data['ranking_date'] <= pd.to_datetime(end_date)].tail(1)
-                win_y = rank_row['rank'].values[0] if not rank_row.empty else None
-                if win_y is None or pd.isnull(win_y):
-                    continue
-                # Add marker
-                fig.add_trace(go.Scatter(
-                    x=[win_x],
-                    y=[win_y],
-                    mode='markers',
-                    marker=dict(
-                        size=marker_size,
-                        symbol='diamond',
-                        color=colors[i % len(colors)],
-                        line=dict(width=2, color='black')
-                    ),
-                    name=f"{player_name} Tournament Win",
-                    showlegend=False,
-                    hovertemplate=(
-                        f"<b>{tournament_name}</b><br>"
-                        f"Venue: {venue}<br>"
-                        f"Type: {ttype}<br>"
-                        f"{'Age' if x_axis_type == 'age' else 'Date'}: %{{x}}<br>"
-                        "<extra></extra>"
-                    )
-                ))
+                        # For date plots, we don't need birth date
+                        win_x = pd.to_datetime(end_date)
+
+                    # Y value: get player's rank at that date (or nearest previous date)
+                    tournament_end_date = pd.to_datetime(end_date)
+                    if tournament_end_date <= player_data['ranking_date'].max() and tournament_end_date >= player_data['ranking_date'].min():
+                        win_y = interpolate_rank_at_date(player_data, tournament_end_date)
+                    else:
+                        # Fallback to nearest rank if outside ranking date range
+                        rank_row = player_data[player_data['ranking_date'] <= tournament_end_date].tail(1)
+                        win_y = rank_row['rank'].values[0] if not rank_row.empty else None
+
+                    if win_y is None or pd.isnull(win_y):
+                        continue
+
+                    # Add marker
+                    fig.add_trace(go.Scatter(
+                        x=[win_x],
+                        y=[win_y],
+                        mode='markers',
+                        marker=dict(
+                            size=marker_size,
+                            symbol='diamond',
+                            color=colors[i % len(colors)],
+                            line=dict(width=2, color='black')
+                        ),
+                        name=f"{player_name} Tournament Win",
+                        showlegend=False,
+                        hovertemplate=(
+                            f"{tournament_name}<br>" +
+                            f"Venue: {venue}<br>"
+                            f"Type: {ttype}<br>"
+                            f"{'Age' if x_axis_type == 'age' else 'Date'}: %{{x}}<br>"
+                            "<extra></extra>"
+                        )
+                    ))
     
     # Set up layout
     if x_axis_type == 'age':
@@ -570,9 +591,30 @@ def update_graph(selected_player_ids, x_axis_type):
         margin=dict(l=50, r=30, t=80, b=50),
         font=dict(family="Segoe UI, Arial, sans-serif")
     )
-    
-    message = "Displaying ranking data for selected players." if not messages else "\n".join(messages)
-    
+
+    # If we have no traces (all players skipped due to missing birth dates)
+    if x_axis_type == 'age' and not fig.data:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="Cannot display age-based plot: birth date information is missing for selected players",
+            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color="#bb2222")
+        )
+        # Hide axis values and grid lines
+        fig.update_xaxes(showticklabels=False, showgrid=False, zeroline=False)
+        fig.update_yaxes(showticklabels=False, showgrid=False, zeroline=False)
+
+    # Add a small watermark
+    fig.add_annotation(
+        text="ATP RankTracker",
+        xref="paper", yref="paper",
+        x=0.99, y=0.01,
+        showarrow=False,
+        font=dict(size=16, color="lightgrey"),
+        opacity=0.7,
+        align="right"
+    )
+        
     return fig
 
 
@@ -611,4 +653,4 @@ def update_dropdown_options(search_value, current_values):
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    application.run()

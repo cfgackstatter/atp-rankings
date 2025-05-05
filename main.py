@@ -1,122 +1,116 @@
-import os
 import argparse
 import logging
-import pandas as pd
+from typing import List
 from datetime import datetime, timedelta
+import asyncio
 
-from src.data_loader import load_players, load_rankings, find_player_by_name
-from src.visualizer import plot_player_rankings
-from src.atp_scraper_utils import scrape_atp_rankings_raw
-from src.atp_scraper import map_and_combine_raw_files
-from src.atp_tournament_scraper import update_tournament_parquet
+from src.atp_ranking_scraper import update_rankings, scrape_atp_rankings_by_date
+from src.atp_tournament_scraper import update_tournaments, scrape_atp_events
+from src.atp_player_scraper import scrape_atp_player_details, update_players_from_rankings
+from src.preprocess_data import preprocess_all
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def get_mondays_2025_until_today():
-    today = datetime.today()
+
+def get_mondays_between(start_date: datetime, end_date: datetime) -> List[str]:
+    """
+    Return all Mondays between start_date and end_date as YYYY-MM-DD strings.
+    
+    This function calculates all Monday dates that fall within the given date range,
+    inclusive of both the start and end dates if they are Mondays.
+    
+    Args:
+        start_date: The starting date of the range
+        end_date: The ending date of the range
+        
+    Returns:
+        A list of strings representing Monday dates in 'YYYY-MM-DD' format
+    """
     mondays = []
-    d = datetime(2025, 1, 1)
+    # Find the first Monday on or after start_date
+    d = start_date
     d += timedelta(days=(0 - d.weekday()) % 7)
-    while d <= today:
+    
+    # Collect all Mondays until end_date
+    while d <= end_date:
         mondays.append(d.strftime('%Y-%m-%d'))
         d += timedelta(days=7)
+    
     return mondays
+
 
 def main():
     parser = argparse.ArgumentParser(description='ATP RankTracker')
-
-    parser.add_argument('--players', type=str, nargs='+',
-                        help='One or more player names to visualize (use quotes for full names, e.g., "Roger Federer")')
-    
-    parser.add_argument('--save', type=str, help='Save the plot to specified path')
-
-    parser.add_argument('--force-download', action='store_true',
-                        help='Force download of data files even if cached')
-    
-    parser.add_argument('--by-age', action='store_true',
-                        help='Plot rankings against player age instead of date')
-    
-    parser.add_argument('--scrape-atp', action='store_true',
-                        help='Scrape new ATP 2025 ranking data and update CSVs')
-    
+    parser.add_argument('--scrape-atp', action='store_true', help='Scrape all new ATP ranking, tournament, and player data, then preprocess.')
+    parser.add_argument('--scrape-players', type=int, default=0, help='Scrape N player details, prioritizing higher-ranked recent players')
+    parser.add_argument('--test-scrape', action='store_true', help='Quick test scrape for a single date/year/player (prints, does not write).')
     args = parser.parse_args()
 
     if args.scrape_atp:
-        players_df = load_players()
-        raw_dir = "data/atp_rankings_2025_raw"
-        os.makedirs(raw_dir, exist_ok=True)
-        mondays = get_mondays_2025_until_today()
-        # Download missing weeks as raw files
-        for week_date in mondays:
-            raw_path = f"{raw_dir}/atp_rankings_2025_{week_date.replace('-', '')}_raw.csv"
-            if not os.path.exists(raw_path):
-                logger.info(f"Scraping for {week_date}...")
-                try:
-                    scrape_atp_rankings_raw(week_date, raw_dir=raw_dir)
-                except Exception as e:
-                    logger.error(f"Failed to scrape {week_date}: {e}")
-        # Combine and map all raw files
-        map_and_combine_raw_files(players_df, raw_dir=raw_dir)
-        # Update combined parquet
-        load_rankings(force_download=True)
-        logger.info("Done updating ATP 2025 rankings.")
-        # Scrape tournaments for all years and types you want:
-        years = list(range(1970, datetime.now().year + 1))
-        tournament_types = ['gs', 'atp', 'ch', 'fu']
-        update_tournament_parquet(years, tournament_types)
-        return
-    
-    # Load player data
-    logger.info("Loading player data...")
-    players_df = load_players()
-    
-    # Load rankings data
-    logger.info("Loading rankings data...")
-    rankings_df = load_rankings()
+        # 1. Scrape rankings (all Mondays from 1973 to today)
+        start_year = 2000
+        today = datetime.today()
+        all_mondays = []
+        for year in range(start_year, today.year + 1):
+            start_date = datetime(year, 1, 1)
+            end_date = datetime(year, 12, 31) if year < today.year else today
+            all_mondays.extend(get_mondays_between(start_date, end_date))
+        logger.info(f"Scraping rankings for {len(all_mondays)} Mondays...")
+        update_rankings(all_mondays)
 
-    # Process player names
-    player_ids = []
-    player_names = []
-    
-    for name in args.players:
-        player_matches = find_player_by_name(players_df, name)
-        if len(player_matches) == 0:
-            logger.warning(f"No players found with name: {name}")
-            continue
-        elif len(player_matches) > 1:
-            logger.info(f"Multiple players found with name: {name}")
-            for _, player in player_matches.iterrows():
-                first_name = "" if pd.isna(player['first_name']) else player['first_name']
-                last_name = "" if pd.isna(player['last_name']) else player['last_name']
-                country_code = "" if pd.isna(player.get('country_code', '')) else player.get('country_code', '')
-                birth_year = ""
-                if 'birth_date' in player and not pd.isna(player['birth_date']):
-                    try:
-                        birth_year = f" - *{pd.to_datetime(player['birth_date']).year}"
-                    except:
-                        pass
-                display_name = f"{last_name}, {first_name}"
-                if country_code:
-                    display_name += f" ({country_code})"
-                display_name += birth_year
-                logger.info(f"  {display_name} (ID: {player['player_id']})")
-            player = player_matches.iloc[0]
-            first_name = "" if pd.isna(player['first_name']) else player['first_name']
-            last_name = "" if pd.isna(player['last_name']) else player['last_name']
-            logger.info(f"Using the first match: {first_name} {last_name}")
-        else:
-            player = player_matches.iloc[0]
-        first_name = "" if pd.isna(player['first_name']) else player['first_name']
-        last_name = "" if pd.isna(player['last_name']) else player['last_name']
-        player_name = f"{first_name} {last_name}".strip()
-        player_ids.append(player['player_id'])
-        player_names.append(player_name)
-    if not player_ids:
-        logger.error("No valid players found. Please check the player names and try again.")
+        # 2. Scrape tournaments (all years and types)
+        years = list(range(start_year, today.year + 1))
+        tournament_types = ['gs', 'atp', 'ch', 'fu']
+        logger.info(f"Scraping tournaments for years {years} and types {tournament_types}...")
+        update_tournaments(years, tournament_types)
+
+        # 3. Preprocess all data for app use
+        logger.info("Preprocessing all raw data for app use...")
+        preprocess_all()
+        logger.info("Done updating all ATP data.")
         return
-    logger.info(f"Plotting ranking history for {len(player_ids)} players...")
-    plot_player_rankings(rankings_df, players_df, player_ids, player_names, args.save, by_age=args.by_age)
-            
+    
+    if args.scrape_players > 0:
+        logger.info(f"Scraping up to {args.scrape_players} player details...")
+        remaining = update_players_from_rankings(max_players=args.scrape_players)
+        
+        # Preprocess player data
+        logger.info("Preprocessing player data...")
+        preprocess_all()
+        
+        logger.info(f"Finished scraping players. {remaining} players remain without data.")
+        return
+    
+    if args.test_scrape:
+        # Test scrape for a single ranking date, tournament year/type, and one player (no file output)
+        test_date = "2024-04-22"
+        test_year = 2024
+        test_ttype = 'atp'
+        logger.info("Testing ranking scrape...")
+        df_ranking = scrape_atp_rankings_by_date(test_date)
+        if df_ranking is not None:
+            print("Ranking scrape result:")
+            print(df_ranking.head())
+        else:
+            print("No ranking data scraped.")
+
+        logger.info("Testing tournament scrape...")
+        df_tournament = scrape_atp_events(test_year, test_ttype)
+        if df_tournament is not None and not df_tournament.empty:
+            print("Tournament scrape result:")
+            print(df_tournament.head())
+        else:
+            print("No tournament data scraped.")
+
+        logger.info("Testing player scrape...")
+        # Use a known player URL from the ATP site for testing
+        test_player_url = "https://www.atptour.com/en/players/roger-federer/f324/overview"
+        details = asyncio.run(scrape_atp_player_details(test_player_url))
+        print("Player scrape result:")
+        print(details)
+        return
+
+
 if __name__ == "__main__":
     main()

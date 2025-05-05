@@ -1,483 +1,102 @@
 import pandas as pd
-import numpy as np
-import requests
-import os
-import logging
-from pathlib import Path
-import glob
-
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Base URL for Jeff Sackmann's tennis_atp repository
-BASE_URL = "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master"
+from typing import Union, Optional
+from pandas import DataFrame, Timestamp
 
 
-def ensure_cache_dir():
-    """Create cache directory if it doesn't exist"""
-    cache_dir = Path("data/cache")
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir
+def load_players() -> DataFrame:
+    """
+    Load preprocessed player data for the app.
+    
+    Returns:
+        DataFrame: Player data containing columns such as 'atp_id', 'atp_name',
+                  'full_name', 'dob', and 'country_code'
+    """
+    return pd.read_parquet("data/atp_players.parquet")
 
 
-def download_file(filename, force_download=False):
-    """Download a file from the tennis_atp repository if not in cache"""
-    cache_dir = ensure_cache_dir()
-    local_path = cache_dir / filename
+def load_rankings() -> DataFrame:
+    """
+    Load preprocessed rankings data for the app.
     
-    # If file exists and we're not forcing a download, use cached version
-    if local_path.exists() and not force_download:
-        print(f"Using cached {filename}")
-        return local_path
-    
-    # Download the file
-    url = f"{BASE_URL}/{filename}"
-    print(f"Downloading {url}")
-    
-    response = requests.get(url)
-    response.raise_for_status()  # Raise exception for 4XX/5XX responses
-    
-    # Save to cache
-    with open(local_path, "wb") as f:
-        f.write(response.content)
-    
-    print(f"Downloaded {filename} to {local_path}")
-    return local_path
+    Returns:
+        DataFrame: Rankings data containing columns such as 'atp_id', 'atp_name',
+                  'ranking_date', and 'rank'
+    """
+    return pd.read_parquet("data/atp_rankings.parquet")
 
 
-def reduce_mem_usage(df):
-    """Reduce memory usage of DataFrame by optimizing data types"""
-    start_mem = df.memory_usage(deep=True).sum() / 1024**2
-    logger.info(f"Memory usage of dataframe is {start_mem:.2f} MB")
+def load_tournaments() -> DataFrame:
+    """
+    Load preprocessed tournament data for the app.
     
-    # Specific optimizations for ATP rankings data
-    type_optimizations = {
-        'player_id': 'int32',  # Keep player IDs as integers
-        'rank': 'int16',       # Rankings won't exceed int16 range
-        'ranking_date': 'datetime64[ns]'  # Keep as datetime
-    }
+    Converts string representations of lists (from parquet storage) back into 
+    actual Python lists for the winner names and URLs columns.
     
-    # Apply specific optimizations first
-    for col, dtype in type_optimizations.items():
-        if col in df.columns:
-            try:
-                df[col] = df[col].astype(dtype)
-            except Exception as e:
-                logger.warning(f"Could not convert {col} to {dtype}: {e}")
+    Returns:
+        DataFrame: Tournament data containing columns such as 'tournament_name',
+                  'start_date', 'end_date', 'tournament_type', 'singles_winner_names',
+                  'singles_winner_urls', and 'venue'
+    """
+    import ast
+
+    # Load the raw data from parquet file
+    df = pd.read_parquet("data/atp_tournaments.parquet")
     
-    # Then apply general optimizations to remaining columns
-    for col in df.columns:
-        # Skip columns we've already optimized
-        if col in type_optimizations:
-            continue
-            
-        # Skip datetime columns
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
-            continue
-            
-        # Skip categorical columns
-        if pd.api.types.is_categorical_dtype(df[col]):
-            continue
-            
-        # For string columns, consider converting to categorical if few unique values
-        if pd.api.types.is_object_dtype(df[col]):
-            num_unique = df[col].nunique()
-            num_total = len(df)
-            if num_unique / num_total < 0.5:  # If less than 50% unique values
-                df[col] = df[col].astype('category')
-            continue
-        
-        # For numeric columns
-        if pd.api.types.is_numeric_dtype(df[col]):
-            c_min = df[col].min()
-            c_max = df[col].max()
-            
-            # For integers
-            if pd.api.types.is_integer_dtype(df[col]):
-                if c_min > np.iinfo(np.int8).min and c_max < np.iinfo(np.int8).max:
-                    df[col] = df[col].astype(np.int8)
-                elif c_min > np.iinfo(np.int16).min and c_max < np.iinfo(np.int16).max:
-                    df[col] = df[col].astype(np.int16)
-                elif c_min > np.iinfo(np.int32).min and c_max < np.iinfo(np.int32).max:
-                    df[col] = df[col].astype(np.int32)
-            # For floats
-            else:
-                if c_min > np.finfo(np.float16).min and c_max < np.finfo(np.float16).max:
-                    df[col] = df[col].astype(np.float16)
-                elif c_min > np.finfo(np.float32).min and c_max < np.finfo(np.float32).max:
-                    df[col] = df[col].astype(np.float32)
-    
-    end_mem = df.memory_usage(deep=True).sum() / 1024**2
-    logger.info(f"Memory usage after optimization is: {end_mem:.2f} MB")
-    logger.info(f"Decreased by {100 * (start_mem - end_mem) / start_mem:.1f}%")
-    
+    # Convert string representations of lists to actual lists
+    if 'singles_winner_names' in df.columns:
+        df['singles_winner_names'] = df['singles_winner_names'].apply(
+            lambda x: ast.literal_eval(x) if isinstance(x, str) and x.startswith('[') else x
+        )
+
+    if 'singles_winner_urls' in df.columns:
+        df['singles_winner_urls'] = df['singles_winner_urls'].apply(
+            lambda x: ast.literal_eval(x) if isinstance(x, str) and x.startswith('[') else x
+        )
+
     return df
 
 
-def load_players():
-    """Load player data from atp_players.csv with optimized memory usage"""
-    players_file = download_file("atp_players.csv")
-    
-    # First time: load CSV and save as parquet
-    parquet_path = Path("data/cache/players.parquet")
-
-    if not parquet_path.exists():
-        # Define columns to read and their types
-        usecols = ['player_id', 'name_first', 'name_last', 'dob', 'ioc']
-
-        dtype_dict = {
-            'player_id': 'int32',
-            'name_first': 'str',
-            'name_last': 'str',
-            'hand': 'category',  # Categorical since limited options (R, L)
-            'ioc': 'category',   # Country codes are categorical
-            'wikidata_id': 'str'
-        }
-
-        # Read CSV with optimized settings
-        players = pd.read_csv(
-            players_file,
-            low_memory=False,
-            usecols=usecols,
-            dtype=dtype_dict,
-            parse_dates=['dob'],
-            keep_default_na=False,
-            na_values=['', 'NA', 'NULL']
-        )
-        
-        # Replace NaN values with empty strings in name columns
-        players['name_first'] = players['name_first'].fillna('')
-        players['name_last'] = players['name_last'].fillna('')
-
-        # Standardize column names
-        column_mapping = {
-            'name_first': 'first_name',
-            'name_last': 'last_name',
-            'dob': 'birth_date',
-            'ioc': 'country_code'
-        }
-
-        rename_dict = {old: new for old, new in column_mapping.items() if old in players.columns}
-        if rename_dict:
-            players = players.rename(columns=rename_dict)
-
-        # Create name search columns for faster lookups - pre-compute lowercase versions
-        players['name_lower_first'] = players['first_name'].str.lower()
-        players['name_lower_last'] = players['last_name'].str.lower()
-
-        # Combine names efficiently
-        players['name_lower_full'] = players['name_lower_first'] + ' ' + players['name_lower_last']
-        
-        # Apply memory optimization
-        players = reduce_mem_usage(players)
-
-        # Save as parquet with optimized compression
-        players.to_parquet(
-            parquet_path,
-            compression='snappy',  # Fast compression/decompression
-            index=False           # Don't store the index
-        )
-    else:
-        # Use parquet for subsequent loads (much faster)
-        players = pd.read_parquet(parquet_path, memory_map=True)  # Use memory mapping for large files
-    
-    return players
-
-
-def load_rankings(decades=None, force_download=False, fill_gaps=False, max_gap_days=5000):
+def interpolate_rank_at_date(player_data: pd.DataFrame, target_date: pd.Timestamp) -> float:
     """
-    Load all rankings data, including 2025, and update combined_rankings.parquet.
+    Interpolate the rank value for the target_date between the two nearest ranking dates.
+    
+    Uses linear interpolation to estimate a player's rank at a specific date that
+    falls between two known ranking dates. This is useful for placing tournament
+    markers precisely on the ranking curve.
     
     Args:
-        decades: List of decades to load (if None, loads all)
-        force_download: Whether to force download and reprocessing
-        fill_gaps: Whether to insert NaN for gaps in player data
-        max_gap_days: Maximum allowed gap in days before inserting NaN
-        
+        player_data: DataFrame containing a player's ranking history,
+                    with columns 'ranking_date' and 'rank'
+        target_date: The date for which to interpolate the rank
+    
     Returns:
-        DataFrame with all rankings data
+        float: The interpolated rank value at the target date
+        
+    Note:
+        Assumes player_data is sorted by 'ranking_date'.
+        If target_date is outside the range of available dates, returns
+        the first or last available rank.
     """
-    decades = decades or ['70s', '80s', '90s', '00s', '10s', '20s', 'current']
+    # If target_date is before the first ranking date, return the first rank
+    if target_date <= player_data['ranking_date'].iloc[0]:
+        return player_data['rank'].iloc[0]
+    
+    # If target_date is after the last ranking date, return the last rank
+    if target_date >= player_data['ranking_date'].iloc[-1]:
+        return player_data['rank'].iloc[-1]
 
-    # Check if combined parquet file exists
-    combined_path = Path("data/cache/combined_rankings.parquet")
-    
-    if combined_path.exists() and not force_download:
-        logger.info("Loading pre-processed rankings data...")
-        return pd.read_parquet(combined_path, memory_map=True)  # Use memory mapping
-    
-    # Otherwise process from CSV files
-    temp_files = []
-    
-    for decade in decades:
-        filename = f"atp_rankings_{decade}.csv"
-        try:
-            file_path = download_file(filename)
+    # Find the two ranking dates surrounding the target_date
+    before = player_data[player_data['ranking_date'] <= target_date].iloc[-1]
+    after = player_data[player_data['ranking_date'] > target_date].iloc[0]
 
-            # Check columns in the file (without loading the whole file)
-            sample = pd.read_csv(file_path, nrows=5)
-            date_col = 'ranking_date' if 'ranking_date' in sample.columns else 'date'
-
-            # Define columns to read and their types - skip points column
-            usecols = [date_col, 'rank', 'player']
-            dtypes = {
-                'player': 'int32',  # Use int32 for player IDs
-                'rank': 'int16'     # Rankings won't exceed int16 range
-            }
-
-            # Process in chunks to reduce memory usage
-            logger.info(f"Processing {filename} in chunks...")
-            
-            # Create a temporary file for this decade
-            temp_parquet = Path(f"data/cache/temp_{decade}.parquet")
-            if temp_parquet.exists():
-                os.remove(temp_parquet)
-
-            # Process each chunk separately and write to a single parquet file
-            chunks = []
-            for chunk in pd.read_csv(file_path, usecols=usecols, dtype=dtypes, chunksize=250000):
-                # Convert date to datetime
-                if date_col == 'date':
-                    chunk['ranking_date'] = pd.to_datetime(chunk['date'], format="%Y%m%d", errors='coerce')
-                    chunk = chunk.drop(columns=['date'])
-                else:
-                    chunk['ranking_date'] = pd.to_datetime(chunk[date_col], format="%Y%m%d", errors='coerce')
-                
-                # Rename player column if needed
-                if 'player' in chunk.columns and 'player_id' not in chunk.columns:
-                    chunk = chunk.rename(columns={'player': 'player_id'})
-                
-                # Add to list of chunks
-                chunks.append(chunk)
-                
-                # To save memory, write to parquet if we have accumulated enough chunks
-                if len(chunks) >= 4:
-                    combined_chunk = pd.concat(chunks, ignore_index=True)
-                    combined_chunk = reduce_mem_usage(combined_chunk)
-                    
-                    # Write to parquet
-                    combined_chunk.to_parquet(
-                        temp_parquet,
-                        compression='snappy',
-                        index=False
-                    )
-                    
-                    # Clear chunks to free memory
-                    chunks = []
-            
-            # Process any remaining chunks
-            if chunks:
-                combined_chunk = pd.concat(chunks, ignore_index=True)
-                combined_chunk = reduce_mem_usage(combined_chunk)
-                
-                # Write to parquet
-                combined_chunk.to_parquet(
-                    temp_parquet,
-                    compression='snappy',
-                    index=False
-                )
-            
-            # Add to list of files to combine
-            temp_files.append(temp_parquet)
-            
-        except Exception as e:
-            logger.error(f"Error loading {filename}: {e}")
+    # Linear interpolation
+    total_days = (after['ranking_date'] - before['ranking_date']).days
+    if total_days == 0:
+        return before['rank']  # Same date, no interpolation needed
     
-    # Add the 2025 file (single CSV, already mapped and deduped)
-    atp_2025_csv = "data/cache/atp_rankings_2025.csv"
-    if os.path.exists(atp_2025_csv):
-        logger.info(f"Adding 2025 rankings from {atp_2025_csv}")
-        df_2025 = pd.read_csv(atp_2025_csv, parse_dates=['ranking_date'])
-        temp_2025_parquet = Path("data/cache/temp_2025.parquet")
-        df_2025 = reduce_mem_usage(df_2025)
-        df_2025.to_parquet(temp_2025_parquet, compression='snappy', index=False)
-        temp_files.append(temp_2025_parquet)
-    else:
-        logger.warning(f"2025 rankings CSV not found at {atp_2025_csv}")
-
-    if not temp_files:
-        logger.error("No ranking data could be loaded")
-        raise ValueError("No ranking data could be loaded")
+    # Calculate proportion of time elapsed and apply to rank difference
+    days_since_before = (target_date - before['ranking_date']).days
+    rank_diff = after['rank'] - before['rank']
+    interpolated_rank = before['rank'] + (rank_diff * days_since_before / total_days)
     
-    # Combine all parquet files
-    logger.info("Combining all decades and 2025 data...")
-    
-    # Read and combine in chunks to avoid memory issues
-    combined_rankings = pd.concat([pd.read_parquet(file) for file in temp_files], ignore_index=True)
-    
-    # Final memory optimization
-    combined_rankings = reduce_mem_usage(combined_rankings)
-
-    # After loading and combining all rankings data:
-    if fill_gaps:
-        combined_rankings = preprocess_rankings_with_gaps(combined_rankings, max_gap_days)
-    
-    # Save combined result
-    combined_rankings.to_parquet(
-        combined_path,
-        compression='snappy',
-        index=False
-    )
-    
-    # Clean up temporary files
-    for file in temp_files:
-        if file.exists():
-            os.remove(file)
-    
-    return combined_rankings
-
-
-def preprocess_rankings_with_gaps(rankings_df, max_gap_days=5000):
-    """
-    For each player, insert NaN rows for gaps in ranking data that exceed max_gap_days.
-    
-    Args:
-        rankings_df: DataFrame containing ranking data
-        max_gap_days: Maximum allowed gap in days before inserting NaN
-        
-    Returns:
-        DataFrame with NaN values inserted for large gaps
-    """
-    logger.info("Preprocessing rankings data to insert NaN for gaps...")
-    
-    # Create a copy to avoid modifying the original
-    processed_df = rankings_df.copy()
-    
-    # Get unique player IDs
-    player_ids = processed_df['player_id'].unique()
-    
-    # List to store DataFrames for each player (with gaps filled)
-    player_dfs = []
-    
-    for player_id in player_ids:
-        # Get data for this player
-        player_data = processed_df[processed_df['player_id'] == player_id].sort_values('ranking_date')
-        
-        if len(player_data) <= 1:
-            # No gaps to fill if only one or zero records
-            player_dfs.append(player_data)
-            continue
-        
-        # Calculate date differences
-        player_data['date_diff'] = player_data['ranking_date'].diff().dt.days
-        
-        # Find gaps larger than max_gap_days
-        gap_indices = player_data[player_data['date_diff'] > max_gap_days].index
-        
-        if len(gap_indices) == 0:
-            # No large gaps for this player
-            player_dfs.append(player_data.drop(columns=['date_diff']))
-            continue
-        
-        # For each large gap, insert a NaN row
-        rows_to_add = []
-        
-        for idx in gap_indices:
-            # Get the dates before and after the gap
-            prev_date = player_data.loc[player_data.index[player_data.index.get_loc(idx)-1], 'ranking_date']
-            curr_date = player_data.loc[idx, 'ranking_date']
-            
-            # Calculate a date in the middle of the gap
-            gap_middle_date = prev_date + (curr_date - prev_date) / 2
-            
-            # Create a new row with NaN rank
-            new_row = {
-                'player_id': player_id,
-                'ranking_date': gap_middle_date,
-                'rank': np.nan,
-                'date_diff': np.nan
-            }
-            rows_to_add.append(new_row)
-        
-        # Add the new rows to the player's data
-        for row in rows_to_add:
-            player_data = pd.concat([player_data, pd.DataFrame([row])], ignore_index=True)
-        
-        # Sort again by date and drop the date_diff column
-        player_data = player_data.sort_values('ranking_date').drop(columns=['date_diff'])
-        
-        # Add to the list of processed player DataFrames
-        player_dfs.append(player_data)
-    
-    # Combine all player DataFrames
-    result_df = pd.concat(player_dfs, ignore_index=True)
-    
-    logger.info(f"Added {len(result_df) - len(rankings_df)} NaN rows for gaps > {max_gap_days} days")
-    
-    return result_df
-
-
-def find_player_by_name(players_df, name):
-    """Find player by name, prioritizing exact matches over partial matches"""
-    name_lower = name.lower()
-
-    # Use query() for faster filtering when possible
-    if 'name_lower_full' in players_df.columns:
-        # First, try exact full name match
-        exact_full_matches = players_df.query(f"name_lower_full == '{name_lower}'")
-        if len(exact_full_matches) > 0:
-            return exact_full_matches
-    
-    # If name contains a space, try matching first and last name parts
-    if ' ' in name_lower:
-        parts = name_lower.split(' ', 1)
-        first_part = parts[0]
-        last_part = parts[1]
-        
-        # Try exact match on first and last parts
-        try:
-            first_last_matches = players_df.query(
-                f"name_lower_first == '{first_part}' and name_lower_last == '{last_part}'"
-            )
-            if len(first_last_matches) > 0:
-                return first_last_matches
-            
-            # Try exact match on last and first parts (reversed order)
-            last_first_matches = players_df.query(
-                f"name_lower_first == '{last_part}' and name_lower_last == '{first_part}'"
-            )
-            if len(last_first_matches) > 0:
-                return last_first_matches
-        except Exception:
-            # Fall back to standard filtering if query fails (e.g., special characters in name)
-            first_last_matches = players_df[
-                (players_df['name_lower_first'] == first_part) &
-                (players_df['name_lower_last'] == last_part)
-            ]
-            if len(first_last_matches) > 0:
-                return first_last_matches
-            
-            last_first_matches = players_df[
-                (players_df['name_lower_first'] == last_part) &
-                (players_df['name_lower_last'] == first_part)
-            ]
-            if len(last_first_matches) > 0:
-                return last_first_matches
-    
-    # Try exact match on first or last name
-    try:
-        exact_first_matches = players_df.query(f"name_lower_first == '{name_lower}'")
-        if len(exact_first_matches) > 0:
-            return exact_first_matches
-        
-        exact_last_matches = players_df.query(f"name_lower_last == '{name_lower}'")
-        if len(exact_last_matches) > 0:
-            return exact_last_matches
-    except Exception:
-        # Fall back to standard filtering
-        exact_first_matches = players_df[players_df['name_lower_first'] == name_lower]
-        if len(exact_first_matches) > 0:
-            return exact_first_matches
-        
-        exact_last_matches = players_df[players_df['name_lower_last'] == name_lower]
-        if len(exact_last_matches) > 0:
-            return exact_last_matches
-    
-    # Fall back to partial matching using contains with case=False for case insensitivity
-    mask = (
-        players_df['name_lower_first'].str.contains(name_lower, regex=False, na=False) |
-        players_df['name_lower_last'].str.contains(name_lower, regex=False, na=False)
-    )
-    
-    return players_df[mask]
+    return interpolated_rank

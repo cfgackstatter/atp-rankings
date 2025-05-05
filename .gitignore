@@ -17,7 +17,7 @@ env/
 ENV/
 
 # Data cache and large files
-data/cache/
+data/raw/
 *.parquet
 *.h5
 *.zip
