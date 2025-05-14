@@ -71,6 +71,11 @@ body {
     padding: 0 !important;
 }
 
+.js-plotly-plot .annotation-text-g {
+    max-width: 90vw;
+    word-wrap: break-word;
+}
+
 /* Footer styling */
 .footer {
     text-align: center;

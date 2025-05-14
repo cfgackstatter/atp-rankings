@@ -335,7 +335,7 @@ def update_graph(selected_atp_ids, x_axis_type, tournament_types):
         # Create empty figure with message
         fig = go.Figure()
         fig.add_annotation(
-            text="Select players from the dropdown above to visualize their ranking history",
+            text="Select players from the dropdown above<br>to visualize their ranking history",
             xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
             font=dict(size=16, color="#666666")
         )
@@ -609,7 +609,7 @@ def update_graph(selected_atp_ids, x_axis_type, tournament_types):
     if x_axis_type == 'age' and not fig.data:
         fig = go.Figure()
         fig.add_annotation(
-            text="Cannot display age-based plot: birth date information is missing for selected players",
+            text="Cannot display age-based plot:<br>birth date information is missing<br>for selected player(s)",
             xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
             font=dict(size=16, color="#bb2222")
         )
@@ -666,4 +666,4 @@ def update_dropdown_options(search_value, current_values):
 
 
 if __name__ == '__main__':
-    application.run(debug=True)
+    application.run()
