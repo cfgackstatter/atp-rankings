@@ -58,6 +58,7 @@ body {
     margin-bottom: 15px;
     height: calc(100vh - 400px);
     min-height: 450px;
+    overflow: hidden;
 }
 
 .main-chart {

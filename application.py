@@ -13,7 +13,7 @@ from src.data_loader import interpolate_rank_at_date
 
 # Initialize the Dash app
 app = dash.Dash(__name__,
-                title='ATP RankTracker',
+                title='TennisRank.net',
                 assets_folder='static',
                 assets_url_path='static',
                 suppress_callback_exceptions=True,
@@ -238,7 +238,7 @@ app.layout = html.Div([
             # Logo placeholder
             html.Img(src='/static/logo.svg', height=40, style={'marginRight': '15px'}),
             # Title next to logo, not above content
-            html.H1("ATP RankTracker", style={'margin': '0', 'fontSize': '24px'})
+            html.H1("TennisRank.net", style={'margin': '0', 'fontSize': '24px'})
         ], style={'display': 'flex', 'alignItems': 'center'}),
 
         # Right side: X-Axis toggle and Tournament Types
@@ -316,7 +316,7 @@ app.layout = html.Div([
         # Footer
         html.Footer([
             html.P([
-                "ATP RankTracker | Data from ATP Tour"
+                "TennisRank.net | Data from ATP Tour"
             ], style={'fontSize': '0.8rem', 'margin': '5px 0'}),
         ], className="footer")
     ], className="main-content"),
@@ -601,16 +601,6 @@ def update_graph(selected_atp_ids, x_axis_type, tournament_types):
         paper_bgcolor='#ffffff',
         hovermode='x',
         showlegend=False,
-        # legend=dict(
-        #     orientation="h",
-        #     yanchor="bottom",
-        #     y=1.02,
-        #     xanchor="right",
-        #     x=1,
-        #     bgcolor='rgba(255,255,255,0.9)',
-        #     bordercolor='rgba(0,0,0,0.1)',
-        #     borderwidth=1
-        # ),
         margin=dict(l=10, r=10, t=30, b=20),
         font=dict(family="Segoe UI, Arial, sans-serif")
     )
@@ -629,7 +619,7 @@ def update_graph(selected_atp_ids, x_axis_type, tournament_types):
 
     # Add a small watermark
     fig.add_annotation(
-        text="ATP RankTracker",
+        text="TennisRank.net",
         xref="paper", yref="paper",
         x=0.99, y=0.01,
         showarrow=False,
