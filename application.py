@@ -537,7 +537,8 @@ def update_graph(selected_atp_ids, x_axis_type, tournament_types):
                                 f"Type: {ttype}<br>"
                                 f"{'Age' if x_axis_type == 'age' else 'Date'}: %{{x}}<br>"
                                 "<extra></extra>"
-                            )
+                            ),
+                            cliponaxis=False
                         ))
     
     # Set up layout
