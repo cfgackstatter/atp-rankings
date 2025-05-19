@@ -172,38 +172,74 @@ def scrape_atp_events(year: int, tournament_type: str) -> pd.DataFrame:
     return df
 
 
-def update_tournaments(years: List[int], tournament_types: List[str], raw_base_dir: str = "data/raw/tournaments", sleep_sec: float = 1):
+def update_tournaments(years: List[int], tournament_types: List[str]) -> None:
     """
-    Update tournaments data, only scraping year/type combinations that don't already exist.
-    Stores data in CSV format organized by year.
+    Update tournament data for specified years and tournament types.
+    Always overwrites the most recent year with tournament data, even if not current year.
     
     Args:
         years: List of years to scrape
-        tournament_types: List of tournament type codes
-        raw_base_dir: Base directory for storing raw tournament files
-        sleep_sec: Seconds to sleep between requests to avoid being blocked
+        tournament_types: List of tournament types ('gs', 'atp', 'ch', 'fu')
     """
-    for year in years:
-        year_dir = os.path.join(raw_base_dir, str(year))
-        os.makedirs(year_dir, exist_ok=True)
-        
-        for ttype in tournament_types:
-            out_path = os.path.join(year_dir, f"tournaments_{ttype}_{year}_raw.csv")
+    # Find the most recent year with tournament files
+    most_recent_year = find_most_recent_year_with_files("data/raw/tournaments")
+
+    for year in years:        
+        for tournament_type in tournament_types:
+            output_path = f"data/raw/tournaments/{year}/tournaments_{tournament_type}_{year}_raw.csv"
             
-            # Skip if file already exists
-            if os.path.exists(out_path):
-                logger.info(f"Skipping {year}/{ttype}, file already exists: {out_path}")
+            if os.path.exists(output_path) and year != most_recent_year:
+                logger.info(f"Skipping {year} {tournament_type} - file already exists")
                 continue
                 
-            # Only scrape if file doesn't exist
-            logger.info(f"Scraping tournaments for {year}, {ttype}...")
-            df = scrape_atp_events(year, ttype)
+            # Always process most recent year or years without existing files
+            logger.info(f"Scraping {year} {tournament_type} tournaments")
+            try:
+                df = scrape_atp_events(year, tournament_type)
+                
+                if df is not None and not df.empty:
+                    # Create directory if it doesn't exist
+                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                    df.to_csv(output_path, index=False)
+                    logger.info(f"Saved {len(df)} tournaments to {output_path}")
+                else:
+                    logger.warning(f"No data found for {year} {tournament_type}")
+            except Exception as e:
+                logger.error(f"Error scraping {year} {tournament_type}: {e}")            
             
-            if df is not None and not df.empty:
-                # Save as CSV
-                df.to_csv(out_path, index=False)
-                logger.info(f"Saved tournaments for {year}/{ttype} to {out_path}")
+            # Add a small delay to avoid overwhelming the server
+            time.sleep(1)
+
+
+def find_most_recent_year_with_files(base_path: str) -> Optional[int]:
+    """
+    Find the most recent year directory under base_path that contains tournament files.
+    
+    Args:
+        base_path: Path to the directory containing year subdirectories
+        
+    Returns:
+        The most recent year (as int) with tournament files, or None if no files found
+    """
+    if not os.path.exists(base_path):
+        return None
+        
+    # Get all year directories (assuming they're named as digits)
+    year_dirs = [d for d in os.listdir(base_path) 
+                if d.isdigit() and os.path.isdir(os.path.join(base_path, d))]
+    
+    if not year_dirs:
+        return None
+        
+    # Sort years in descending order
+    year_dirs = sorted(year_dirs, key=int, reverse=True)
+    
+    # Find the most recent year with tournament files
+    for year_dir in year_dirs:
+        year_path = os.path.join(base_path, year_dir)
+        files = [f for f in os.listdir(year_path) 
+                if f.startswith('tournaments_') and f.endswith('_raw.csv')]
+        if files:
+            return int(year_dir)
             
-            # Sleep to avoid being blocked
-            logger.info(f"Sleeping for {sleep_sec} seconds before next request")
-            time.sleep(sleep_sec)
+    return None
