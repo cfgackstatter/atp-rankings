@@ -462,7 +462,8 @@ def update_graph(selected_atp_ids, x_axis_type, tournament_types):
                 ),
                 name=f"{player_name} Best",
                 showlegend=False,
-                hovertemplate=f"First reached #{int(best_y)}<br>{'Age' if x_axis_type == 'age' else 'Date'}: {best_x_label}<extra></extra>"
+                hovertemplate=f"First reached #{int(best_y)}<br>{'Age' if x_axis_type == 'age' else 'Date'}: {best_x_label}<extra></extra>",
+                cliponaxis=False
             ))
 
         # Tournament win markers
