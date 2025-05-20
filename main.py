@@ -49,7 +49,7 @@ def main():
 
     if args.scrape_atp:
         # 1. Scrape rankings (all Mondays from 1973 to today)
-        start_year = 2025
+        start_year = 1987
         today = datetime.today()
         all_mondays = []
         for year in range(start_year, today.year + 1):

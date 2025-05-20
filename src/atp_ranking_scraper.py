@@ -1,6 +1,7 @@
 import os
 import time
 import requests
+import polars as pl
 import pandas as pd
 from bs4 import BeautifulSoup
 import logging

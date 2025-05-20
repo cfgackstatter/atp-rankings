@@ -80,7 +80,7 @@ Visit [http://localhost:5000](http://localhost:5000) in your browser.
 ## Tech Stack
 
 - **Frontend:** Dash by Plotly (Python-based web framework)
-- **Data Processing:** Pandas, NumPy
+- **Data Processing:** Pandas, Polars, NumPy
 - **Web Scraping:** Requests, BeautifulSoup, Requests-HTML
 - **Deployment:** AWS Elastic Beanstalk
 

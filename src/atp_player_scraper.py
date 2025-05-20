@@ -2,6 +2,7 @@ import asyncio
 from requests_html import AsyncHTMLSession
 from bs4 import BeautifulSoup
 from typing import Dict, Any, Optional
+import polars as pl
 import pandas as pd
 import os
 import glob

@@ -2,6 +2,7 @@ import dash
 from dash import dcc, html
 from dash.dependencies import Input, Output, State
 import dash_bootstrap_components as dbc
+import polars as pl
 import pandas as pd
 import plotly.graph_objects as go
 from dash.exceptions import PreventUpdate
@@ -25,10 +26,10 @@ application = app.server
 # Load data at startup
 print("Loading player data...")
 try:
-   players_df = load_players()
+    players_df = load_players()
 except FileNotFoundError:
-   print("No player data found.")
-   players_df = pd.DataFrame(columns=['atp_id', 'full_name', 'country_code', 'dob'])
+    print("No player data found.")
+    players_df = pl.DataFrame(schema={"atp_id": pl.Utf8, "full_name": pl.Utf8, "country_code": pl.Utf8, "dob": pl.Date})
 
 print("Loading rankings data...")
 rankings_df = load_rankings()
@@ -39,28 +40,29 @@ tournaments_df = load_tournaments()
 # Create a function to generate player options once
 def generate_player_options(players_df, rankings_df):
     options = []
-
+    
     # Get all known atp_ids from players_df
-    known_atp_ids = set(players_df['atp_id'].unique()) if not players_df.empty else set()
-
+    known_atp_ids = set(players_df.get_column("atp_id").unique()) if not players_df.is_empty() else set()
+    
     # Process all players from rankings_df
-    if not rankings_df.empty:
+    if not rankings_df.is_empty():
         # Get unique players from rankings
-        unique_players = rankings_df[['atp_id', 'atp_name']].drop_duplicates()
-
-        for _, player in unique_players.iterrows():
-            atp_id = player['atp_id']
-            atp_name = player['atp_name']
+        unique_players = rankings_df.select(["atp_id", "atp_name"]).unique()
+        
+        for row in unique_players.iter_rows(named=True):
+            atp_id = row["atp_id"]
+            atp_name = row["atp_name"]
             search_terms = []
+            
             if atp_name is not None and not pd.isna(atp_name):
                 search_terms = [atp_name.replace('-', ' ').lower()]
             else:
                 search_terms = []
-
+            
             # If player exists in players_df, use that data
             if atp_id in known_atp_ids:
-                player_info = players_df[players_df['atp_id'] == atp_id].iloc[0]
-
+                player_info = players_df.filter(pl.col("atp_id") == atp_id).row(0, named=True)
+                
                 # Use full_name if available, otherwise use atp_name
                 full_name = player_info.get('full_name', '')
                 if pd.isna(full_name) or not full_name:
@@ -69,22 +71,22 @@ def generate_player_options(players_df, rankings_df):
                 else:
                     display_name = full_name
                     search_terms.append(full_name.lower())
-
+                
                 # Add country code if available
                 country_code = player_info.get('country_code', '')
                 if country_code and not pd.isna(country_code):
                     display_name += f" ({country_code})"
                     search_terms.append(country_code.lower())
-
+                
                 # Add birth year if available
                 dob = player_info.get('dob')
                 if dob and not pd.isna(dob):
                     try:
-                        birth_year = pd.to_datetime(dob).year
+                        birth_year = pl.from_pandas(pd.to_datetime([dob])).dt.year()[0]
                         display_name += f" - *{birth_year}"
                     except:
                         pass
-
+            
             # If player doesn't exist in players_df, use atp_name as fallback
             else:
                 if not atp_name or pd.isna(atp_name):
@@ -93,7 +95,7 @@ def generate_player_options(players_df, rankings_df):
                 # Use atp_name as display name (with dashes replaced by spaces)
                 display_name = atp_name.replace('-', ' ').title()
                 search_terms.append(atp_name.replace('-', ' ').lower())
-
+            
             options.append({
                 'label': display_name,
                 'value': atp_id,
@@ -111,15 +113,15 @@ player_options = generate_player_options(players_df, rankings_df)
 player_search_index = {}
 
 # First try using players_df
-if not players_df.empty:
-    for _, player in players_df.iterrows():
-        atp_id = player['atp_id']
-        full_name = "" if pd.isna(player.get('full_name', '')) else str(player.get('full_name', '')).lower()
+if not players_df.is_empty():
+    for row in players_df.iter_rows(named=True):
+        atp_id = row['atp_id']
+        full_name = "" if pd.isna(row.get('full_name', '')) else str(row.get('full_name', '')).lower()
         
         # Skip players with empty names
         if not full_name:
             continue
-            
+        
         # Add to search index with all possible search terms
         search_terms = []
         
@@ -133,11 +135,11 @@ if not players_df.empty:
                 search_terms.append(part)
         
         # Add country code if available
-        country_code = player.get('country_code', '')
+        country_code = row.get('country_code', '')
         if country_code and not pd.isna(country_code):
             country_code = country_code.lower()
             search_terms.append(country_code)
-            
+        
         # Add to search index with all possible search terms
         for term in search_terms:
             if term:
@@ -145,20 +147,19 @@ if not players_df.empty:
                     player_search_index[term] = []
                 player_search_index[term].append(atp_id)
 
-# Always process rankings_df (remove the else)
-unique_players = rankings_df[['atp_id', 'atp_name']].drop_duplicates()
-
-for _, player in unique_players.iterrows():
-    atp_id = player['atp_id']
-
+# Process rankings_df for players not in players_df
+unique_players = rankings_df.select(["atp_id", "atp_name"]).unique()
+for row in unique_players.iter_rows(named=True):
+    atp_id = row['atp_id']
+    
     # Skip players we already processed from players_df
     if atp_id in player_search_index.get('atp_id', []):
         continue
-
-    atp_name = player['atp_name']
+    
+    atp_name = row['atp_name']
     if not atp_name or pd.isna(atp_name):
         continue
-        
+    
     # Format atp_name for search
     search_name = atp_name.replace('-', ' ').lower()
     
@@ -171,7 +172,7 @@ for _, player in unique_players.iterrows():
     for part in name_parts:
         if len(part) > 1:  # Skip very short parts
             search_terms.append(part)
-            
+    
     # Add to search index
     for term in search_terms:
         if term:
@@ -353,29 +354,30 @@ def update_graph(selected_atp_ids, x_axis_type, tournament_types):
     # Pre-fetch all player info at once
     player_info_dict = {}
     for atp_id in selected_atp_ids:
-        player_info = players_df[players_df['atp_id'] == atp_id]
-        if not player_info.empty:
-            player_info_dict[atp_id] = player_info.iloc[0]
+        player_info = players_df.filter(pl.col("atp_id") == atp_id)
+        if not player_info.is_empty():
+            player_info_dict[atp_id] = player_info.row(0, named=True)
     
     messages = []
     all_x_values = []  # To store all x values for padding calculation
 
     for i, atp_id in enumerate(selected_atp_ids):
         # Filter rankings for this player
-        player_data = rankings_df[rankings_df['atp_id'] == atp_id]
+        player_data = rankings_df.filter(pl.col("atp_id") == atp_id)
         
-        if player_data.empty:
+        if player_data.is_empty():
             # Get player name from pre-fetched info
             player_info = player_info_dict.get(atp_id)
             if player_info is not None:
                 player_name = player_info.get('full_name', '') or f"{player_info.get('first_name', '')} {player_info.get('last_name', '')}".strip()
             else:
                 player_name = f"Player {atp_id}"
+            
             messages.append(f"No ranking data found for {player_name}")
             continue
 
         # Sort by date
-        player_data = player_data.sort_values('ranking_date')
+        player_data = player_data.sort("ranking_date")
 
         # Get player name
         player_info = player_info_dict.get(atp_id)
@@ -383,65 +385,71 @@ def update_graph(selected_atp_ids, x_axis_type, tournament_types):
             player_name = player_info.get('full_name', '')
         else:
             # Fallback to atp_name from rankings
-            player_row = rankings_df[rankings_df['atp_id'] == atp_id]
-            if not player_row.empty:
-                atp_name = player_row['atp_name'].iloc[0]
+            player_row = rankings_df.filter(pl.col("atp_id") == atp_id)
+            if not player_row.is_empty():
+                atp_name = player_row.select("atp_name").row(0)[0]
                 player_name = atp_name.replace('-', ' ').title()
             else:
                 player_name = f"Player {atp_id}"
+
+        # For plotting, convert to pandas
+        player_data_pd = player_data.to_pandas()
             
         if x_axis_type == 'age':
             # Check if we have player info and birth date
-            if player_info is not None and 'dob' in player_info and pd.notna(player_info['dob']):
+            if player_info is not None and 'dob' in player_info and not pd.isna(player_info['dob']):
                 birth_date = pd.to_datetime(player_info['dob'])
                 
                 # Vectorized age calculation - more efficient
-                player_data = player_data.copy()  # Avoid SettingWithCopyWarning
-                player_data['age'] = (player_data['ranking_date'] - birth_date).dt.days / 365.25
+                player_data_pd['age'] = (player_data_pd['ranking_date'] - birth_date).dt.days / 365.25
                 
-                x_values = player_data['age']
+                x_values = player_data_pd['age']
                 all_x_values.extend(x_values)
                 
                 # Plot with age on x-axis
                 fig.add_trace(go.Scatter(
                     x=x_values,
-                    y=player_data['rank'],
+                    y=player_data_pd['rank'],
                     mode='lines',
                     name=player_name,
                     line=dict(color=colors[i % len(colors)], width=2.5, shape='linear'),
-                    hovertemplate='<b>%{fullData.name}</b><br>Rank: %{y}<extra></extra>',
+                    hovertemplate='%{fullData.name}<br>Rank: %{y}<extra></extra>',
                     connectgaps=False
                 ))
             else:
                 messages.append(f"Birth date not available for {player_name}, skipping age-based plot")
                 continue
         else:
-            x_values = player_data['ranking_date']
+            x_values = player_data_pd['ranking_date']
             all_x_values.extend(x_values)
             
             # Plot with date on x-axis
             fig.add_trace(go.Scatter(
                 x=x_values,
-                y=player_data['rank'],
+                y=player_data_pd['rank'],
                 mode='lines',
                 name=player_name,
                 line=dict(color=colors[i % len(colors)], width=2.5, shape='linear'),
-                hovertemplate='<b>%{fullData.name}</b><br>Rank: %{y}<extra></extra>',
+                hovertemplate='%{fullData.name}<br>Rank: %{y}<extra></extra>',
                 connectgaps=False
             ))
 
-        if not player_data['rank'].isnull().all():
-            best_rank = player_data['rank'].min()
+        # Add best rank marker
+        if not player_data_pd['rank'].isnull().all():
+            best_rank = player_data_pd['rank'].min()
+            
             # Get the first occurrence of the best rank
-            best_row = player_data[player_data['rank'] == best_rank].iloc[0]
+            best_row = player_data_pd[player_data_pd['rank'] == best_rank].iloc[0]
+            
             if x_axis_type == 'age':
                 best_x = best_row['age']
                 best_x_label = f"{best_x:.2f}"
             else:
                 best_x = best_row['ranking_date']
                 best_x_label = best_x.strftime('%b %d, %Y')
+            
             best_y = best_row['rank']
-
+            
             # Add a marker for the first time the best rank was reached
             fig.add_trace(go.Scatter(
                 x=[best_x],
@@ -456,9 +464,9 @@ def update_graph(selected_atp_ids, x_axis_type, tournament_types):
                 text=[f"#{int(best_y)}"],
                 textposition="top center",
                 textfont=dict(
-                    color=colors[i % len(colors)],  # <-- Set your desired color here
-                    size=10,                        # (optional) set text size
-                    family="Arial"                  # (optional) set font family
+                    color=colors[i % len(colors)],
+                    size=10,
+                    family="Arial"
                 ),
                 name=f"{player_name} Best",
                 showlegend=False,
@@ -467,9 +475,12 @@ def update_graph(selected_atp_ids, x_axis_type, tournament_types):
             ))
 
         # Tournament win markers
-        if not tournaments_df.empty:
+        if not tournaments_df.is_empty():
+            # Convert to pandas for easier processing
+            tournaments_pd = tournaments_df.to_pandas()
+            
             # Find tournaments this player won (singles)
-            for _, win in tournaments_df.iterrows():
+            for _, win in tournaments_pd.iterrows():
                 if win.get('tournament_type', '') in tournament_types:
                     # Check if this player won by matching atp_id in URLs
                     winner_urls = win.get('singles_winner_urls', [])
@@ -478,46 +489,51 @@ def update_graph(selected_atp_ids, x_axis_type, tournament_types):
                         end_date = win.get('end_date')
                         if pd.isnull(end_date):
                             continue
-
+                        
                         # Tournament info for hover
                         tournament_name = win.get('tournament_name', '')
                         venue = win.get('venue', '')
-
+                        
                         # Map type code to label and marker size
                         type_map = {'gs': 'Grand Slam', 'atp': 'ATP Tour', 'ch': 'Challenger Tour', 'fu': 'ITF Tour'}
                         marker_map = {'gs': 12, 'atp': 10, 'ch': 8, 'fu': 6}
+                        
                         ttype = type_map.get(win.get('tournament_type', ''), win.get('tournament_type', ''))
                         marker_size = marker_map.get(win.get('tournament_type', ''), 10)
-
+                        
                         # X-axis value depends on plot type
                         if x_axis_type == 'age':
                             # For age plots, we need birth date
                             birth_date = None
-                            if player_info is not None and 'dob' in player_info and pd.notna(player_info['dob']):
+                            if player_info is not None and 'dob' in player_info and not pd.isna(player_info['dob']):
                                 birth_date = pd.to_datetime(player_info['dob'])
-
+                            
                             if birth_date is None:
                                 # Skip this tournament for age plots if no birth date
                                 continue
-
+                            
                             win_age = (pd.to_datetime(end_date) - birth_date).days / 365.25
                             win_x = win_age
                         else:
                             # For date plots, we don't need birth date
                             win_x = pd.to_datetime(end_date)
-
+                        
                         # Y value: get player's rank at that date (or nearest previous date)
                         tournament_end_date = pd.to_datetime(end_date)
-                        if tournament_end_date <= player_data['ranking_date'].max() and tournament_end_date >= player_data['ranking_date'].min():
+                        
+                        # Convert to pandas for interpolation
+                        player_data_pd = player_data.to_pandas()
+                        
+                        if tournament_end_date <= player_data_pd['ranking_date'].max() and tournament_end_date >= player_data_pd['ranking_date'].min():
                             win_y = interpolate_rank_at_date(player_data, tournament_end_date)
                         else:
                             # Fallback to nearest rank if outside ranking date range
-                            rank_row = player_data[player_data['ranking_date'] <= tournament_end_date].tail(1)
+                            rank_row = player_data_pd[player_data_pd['ranking_date'] <= tournament_end_date].tail(1)
                             win_y = rank_row['rank'].values[0] if not rank_row.empty else None
-
+                        
                         if win_y is None or pd.isnull(win_y):
                             continue
-
+                        
                         # Add marker
                         fig.add_trace(go.Scatter(
                             x=[win_x],
@@ -533,10 +549,9 @@ def update_graph(selected_atp_ids, x_axis_type, tournament_types):
                             showlegend=False,
                             hovertemplate=(
                                 f"{tournament_name}<br>" +
-                                f"Venue: {venue}<br>"
-                                f"Type: {ttype}<br>"
-                                f"{'Age' if x_axis_type == 'age' else 'Date'}: %{{x}}<br>"
-                                "<extra></extra>"
+                                f"Venue: {venue}<br>" +
+                                f"Type: {ttype}<br>" +
+                                f"{'Age' if x_axis_type == 'age' else 'Date'}: %{{x}}<br><extra></extra>"
                             ),
                             cliponaxis=False
                         ))
@@ -544,7 +559,7 @@ def update_graph(selected_atp_ids, x_axis_type, tournament_types):
     # Set up layout
     if x_axis_type == 'age':
         x_axis_title = 'Age (years)'
-
+        
         # Add padding to age axis if we have data
         if all_x_values:
             min_x = min(all_x_values)
@@ -553,7 +568,7 @@ def update_graph(selected_atp_ids, x_axis_type, tournament_types):
             fig.update_xaxes(
                 range=[min_x - padding, max_x + padding]  # Add padding
             )
-
+        
         fig.update_xaxes(
             title=dict(text=x_axis_title, font=dict(size=14, color='#444')),
             tickformat='.1f',
@@ -563,7 +578,7 @@ def update_graph(selected_atp_ids, x_axis_type, tournament_types):
         )
     else:
         x_axis_title = 'Date'
-
+        
         # Add padding to date axis if we have data
         if all_x_values:
             min_date = min(all_x_values)
@@ -573,7 +588,7 @@ def update_graph(selected_atp_ids, x_axis_type, tournament_types):
             fig.update_xaxes(
                 range=[min_date - padding, max_date + padding]  # Add padding
             )
-
+        
         fig.update_xaxes(
             title=dict(text=x_axis_title, font=dict(size=14, color='#444')),
             hoverformat='%b %d, %Y',
@@ -591,7 +606,7 @@ def update_graph(selected_atp_ids, x_axis_type, tournament_types):
                 ])
             )
         )
-
+    
     fig.update_layout(
         yaxis=dict(
             title=dict(text='ATP Ranking', font=dict(size=14, color='#444')),
@@ -606,7 +621,7 @@ def update_graph(selected_atp_ids, x_axis_type, tournament_types):
         margin=dict(l=10, r=10, t=30, b=20),
         font=dict(family="Segoe UI, Arial, sans-serif")
     )
-
+    
     # If we have no traces (all players skipped due to missing birth dates)
     if x_axis_type == 'age' and not fig.data:
         fig = go.Figure()
@@ -615,10 +630,11 @@ def update_graph(selected_atp_ids, x_axis_type, tournament_types):
             xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
             font=dict(size=16, color="#bb2222")
         )
+        
         # Hide axis values and grid lines
         fig.update_xaxes(showticklabels=False, showgrid=False, zeroline=False)
         fig.update_yaxes(showticklabels=False, showgrid=False, zeroline=False)
-
+    
     # Add a small watermark
     fig.add_annotation(
         text="TennisRank.net",
@@ -629,7 +645,7 @@ def update_graph(selected_atp_ids, x_axis_type, tournament_types):
         opacity=0.7,
         align="right"
     )
-        
+    
     return fig
 
 
@@ -668,4 +684,4 @@ def update_dropdown_options(search_value, current_values):
 
 
 if __name__ == '__main__':
-    application.run()
+    application.run(debug=True)
