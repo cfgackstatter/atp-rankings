@@ -50,3 +50,7 @@ npm-debug.log
 
 # Test Notebook
 Test.ipynb
+# Elastic Beanstalk Files
+.elasticbeanstalk/*
+!.elasticbeanstalk/*.cfg.yml
+!.elasticbeanstalk/*.global.yml
