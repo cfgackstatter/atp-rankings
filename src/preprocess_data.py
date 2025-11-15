@@ -74,28 +74,24 @@ def insert_nan_for_gaps(rankings_df: pl.DataFrame, max_gap_days: int) -> pl.Data
     Returns:
         DataFrame with NaN rows inserted for large gaps
     """
-    # Sort by atp_id and ranking_date
+    # Sort by atp_id and ranking_date once
     rankings_df = rankings_df.sort(["atp_id", "ranking_date"])
 
-    # Process each player separately and collect new rows
+    # Convert to pandas once for faster group operations
+    pdf = rankings_df.to_pandas()
+
     new_rows = []
 
-    # Group by atp_id
-    for atp_id in rankings_df.get_column("atp_id").unique():
-        # Filter for this player
-        group = rankings_df.filter(pl.col("atp_id") == atp_id)
-        dates = group.get_column("ranking_date").to_numpy()
-        
-        # Get the atp_name if it exists in the columns
-        atp_name = None
-        if "atp_name" in group.columns:
-            atp_names = group.get_column("atp_name").unique()
-            if len(atp_names) > 0:
-                atp_name = atp_names[0]
+    # Group by atp_id - much faster than filtering repeatedly
+    for atp_id, group in pdf.groupby("atp_id", sort=False):
+        dates = group["ranking_date"].values
+
+        # Get atp_name if it exists
+        atp_name = group["atp_name"].iloc[0] if "atp_name" in group.columns else None
         
         # Check for gaps between consecutive ranking dates
         for i in range(1, len(dates)):
-            # Convert timedelta64 to days using division by numpy.timedelta64(1, 'D')
+            # Calculate gap in days
             gap = (dates[i] - dates[i-1]) / np.timedelta64(1, 'D')
             
             if gap > max_gap_days:
@@ -104,7 +100,7 @@ def insert_nan_for_gaps(rankings_df: pl.DataFrame, max_gap_days: int) -> pl.Data
                 new_rows.append({
                     "atp_id": atp_id,
                     "atp_name": atp_name,
-                    "ranking_date": pd.Timestamp(mid_date),  # Convert to pandas Timestamp first
+                    "ranking_date": pd.Timestamp(mid_date),
                     "rank": None
                 })
     
@@ -139,6 +135,7 @@ def insert_nan_for_gaps(rankings_df: pl.DataFrame, max_gap_days: int) -> pl.Data
         # Combine original data with new NaN rows and sort
         combined = pl.concat([rankings_df, nan_df], how="vertical_relaxed")
         combined = combined.sort(["atp_id", "ranking_date"])
+        
         return combined
     else:
         return rankings_df
