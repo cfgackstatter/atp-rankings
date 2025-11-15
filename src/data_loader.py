@@ -78,8 +78,10 @@ def interpolate_rank_at_date(player_data: pl.DataFrame, target_date: pl.Date) ->
     # Convert to pandas for now as this function is more complex to rewrite
     # and is called per tournament marker, not in bulk processing
     pdf = player_data.to_pandas()
-    target_date_pd = pd.Timestamp(target_date)
-
+    
+    # Convert polars.Date to pandas Timestamp via string
+    target_date_pd = pd.Timestamp(str(target_date))
+    
     # If target_date is before the first ranking date, return the first rank
     if target_date_pd <= pdf['ranking_date'].iloc[0]:
         return float(pdf['rank'].iloc[0])
@@ -87,11 +89,11 @@ def interpolate_rank_at_date(player_data: pl.DataFrame, target_date: pl.Date) ->
     # If target_date is after the last ranking date, return the last rank
     if target_date_pd >= pdf['ranking_date'].iloc[-1]:
         return float(pdf['rank'].iloc[-1])
-
+    
     # Find the two ranking dates surrounding the target_date
     before = pdf[pdf['ranking_date'] <= target_date_pd].iloc[-1]
     after = pdf[pdf['ranking_date'] > target_date_pd].iloc[0]
-
+    
     # Linear interpolation
     total_days = (after['ranking_date'] - before['ranking_date']).days
     if total_days == 0:
