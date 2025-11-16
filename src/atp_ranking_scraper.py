@@ -9,6 +9,55 @@ from typing import Optional, List
 
 logger = logging.getLogger(__name__)
 
+def get_available_ranking_dates(start_year: Optional[int] = None) -> List[str]:
+    """
+    Scrape all available ranking dates from the ATP Tour rankings page.
+    
+    Args:
+        start_year: Optional starting year to filter dates (e.g., 2025).
+                   If None, returns all available dates.
+    
+    Returns:
+        List[str]: List of available ranking dates in YYYY-MM-DD format,
+                   sorted from oldest to newest
+    """
+    url = "https://www.atptour.com/en/rankings/singles"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    
+    logger.info("Fetching available ranking dates from ATP website...")
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    
+    soup = BeautifulSoup(response.text, "html.parser")
+    
+    # Find the date filter dropdown
+    date_select = soup.find('select', {'id': 'dateWeek-filter'})
+    
+    if not date_select:
+        logger.error("Could not find date dropdown on rankings page")
+        return []
+    
+    # Extract all option values
+    dates = []
+    for option in date_select.find_all('option'):
+        date_value = option.get('value')
+        if date_value and date_value != 'Current Week':
+            # Convert format from YYYY.MM.DD to YYYY-MM-DD if needed
+            date_str = date_value.replace('.', '-')
+            dates.append(date_str)
+    
+    # Sort dates from oldest to newest
+    dates.sort()
+    
+    # Filter by start_year if provided
+    if start_year is not None:
+        dates = [d for d in dates if int(d.split('-')[0]) >= start_year]
+        logger.info(f"Found {len(dates)} available ranking dates from {start_year} onwards")
+    else:
+        logger.info(f"Found {len(dates)} available ranking dates")
+    
+    return dates
+
 
 def scrape_atp_rankings_by_date(date: str) -> Optional[pd.DataFrame]:
     """
@@ -20,7 +69,7 @@ def scrape_atp_rankings_by_date(date: str) -> Optional[pd.DataFrame]:
     
     Args:
         date (str): Date in YYYY-MM-DD format for which to scrape rankings
-        
+    
     Returns:
         Optional[pd.DataFrame]: DataFrame containing the rankings data with columns:
             - Rank: Player's numerical ranking
@@ -30,25 +79,25 @@ def scrape_atp_rankings_by_date(date: str) -> Optional[pd.DataFrame]:
             - atp_id: Player's unique ATP ID code
             - atp_name: Player's name in URL-friendly format
             - ranking_date: The date of the rankings (as datetime)
-            
         Returns None if no ranking table is found for the given date.
-        
+    
     Raises:
         requests.exceptions.HTTPError: If the HTTP request to ATP website fails
     """
     # Construct URL for ATP rankings page with date parameter
     url = f"https://www.atptour.com/en/rankings/singles?rankRange=0-5000&dateWeek={date}"
     headers = {"User-Agent": "Mozilla/5.0"}
-
     logger.info(f"Requesting {url}")
+    
     response = requests.get(url, headers=headers)
-    response.raise_for_status() # Raise exception for HTTP errors
-
+    response.raise_for_status()  # Raise exception for HTTP errors
+    
     # Parse HTML content
     soup = BeautifulSoup(response.text, "html.parser")
-
+    
     # Find the rankings table
     table = soup.find('table', class_='mega-table desktop-table non-live')
+    
     if not table:
         logger.warning(f"No ranking table found for date {date}")
         return None
@@ -56,40 +105,42 @@ def scrape_atp_rankings_by_date(date: str) -> Optional[pd.DataFrame]:
     # Extract table headers
     header_row = table.find("tr")
     headers_list = [th.get_text(strip=True) for th in header_row.find_all("th")][1:]
-
+    
     # Extract table data
     data = []
     for tr in table.tbody.find_all('tr'):
         tds = tr.find_all('td')
         if not tds or len(tds) == 1:
             continue
-
+        
         row = []
         for idx, td in enumerate(tds):
             if idx == 1:
                 # Extract player name from the player cell
                 name_li = td.find('li', class_='name center')
                 player_name = name_li.get_text(strip=True) if name_li else ""
-
+                
                 # Extract rank change indicator (up/down/unchanged)
                 rank_up = td.find('span', class_='rank-up')
                 rank_down = td.find('span', class_='rank-down')
+                
                 if rank_up:
                     rank_change = rank_up.get_text(strip=True)
                 elif rank_down:
                     rank_change = rank_down.get_text(strip=True)
                 else:
-                    rank_change = "0" # No change in ranking
-
+                    rank_change = "0"  # No change in ranking
+                
                 row.append(player_name)
                 row.append(rank_change)
             else:
                 # Extract text for other cells (rank, points, etc.)
                 row.append(td.get_text(strip=True))
-
+        
         # Extract player identifiers from profile URL
         player_td = tds[1]
         atp_id, atp_name, player_url = "", "", ""
+        
         profile_link = player_td.find("a", href=True)
         if profile_link and "/players/" in profile_link['href']:
             parts = profile_link['href'].split('/')
@@ -99,14 +150,14 @@ def scrape_atp_rankings_by_date(date: str) -> Optional[pd.DataFrame]:
         
         row += [atp_id, atp_name]
         data.append(row)
-
-    # Create DataFrame with all extracted columns    
+    
+    # Create DataFrame with all extracted columns
     headers_full = headers_list[:2] + ['rank_change'] + headers_list[2:] + ['atp_id', 'atp_name']
     df = pd.DataFrame(data, columns=headers_full)
     
     # Add ranking date column
     df['ranking_date'] = pd.to_datetime(date)
-
+    
     return df
 
 
@@ -128,15 +179,16 @@ def update_rankings(dates: List[str], raw_base_dir: str = "data/raw/rankings", s
         if os.path.exists(out_path):
             logger.info(f"Skipping {date}, file already exists: {out_path}")
             continue
-            
+        
         # Only scrape if file doesn't exist
         logger.info(f"Scraping rankings for {date}")
         df = scrape_atp_rankings_by_date(date)
+        
         if df is not None and not df.empty:
             os.makedirs(raw_dir, exist_ok=True)
             df.to_csv(out_path, index=False)
             logger.info(f"Saved rankings for {date} to {out_path}")
-
+        
         # Sleep to avoid being blocked
         logger.info(f"Sleeping for {sleep_sec} seconds before next request")
         time.sleep(sleep_sec)
