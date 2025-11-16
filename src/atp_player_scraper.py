@@ -10,22 +10,25 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-
 async def scrape_atp_player_details(player_url: str) -> Optional[Dict[str, Any]]:
     """
     Scrape all personal details for an ATP player from their overview page.
-
+    
     Args:
         player_url (str): Full URL to the player's overview page.
-        
+    
     Returns:
         dict: Extracted personal details {label: value, ...}, or None if not found.
     """
     asession = AsyncHTMLSession()
     logger.info(f"Scraping player details from {player_url}")
+
     try:
         response = await asession.get(player_url)
-        await response.html.arender(timeout=20, sleep=2)
+
+        # Increase timeout and sleep time for JavaScript to fully load
+        await response.html.arender(timeout=30, sleep=5)
+
         soup = BeautifulSoup(response.html.raw_html, 'html.parser')
         
         # Extract player details
@@ -41,46 +44,76 @@ async def scrape_atp_player_details(player_url: str) -> Optional[Dict[str, Any]]
 
         # Extract personal details from pd_content section
         pd_content = soup.find('div', class_='pd_content')
+
         if not pd_content:
-            logger.warning("No personal details section (.pd_content) found.")
-            return None
+            # Try alternative: check if content exists but wasn't found
+            logger.warning(f"No personal details section (.pd_content) found for {player_url}")
+            # Debug: print available classes
+            all_divs = soup.find_all('div', limit=20)
+            logger.debug(f"Found {len(all_divs)} divs in page")
+            
+            # Still return basic info from URL
+            url_parts = player_url.strip('/').split('/')
+            if len(url_parts) >= 5:
+                details['atp_name'] = url_parts[-3]
+                details['atp_id'] = url_parts[-2]
+            
+            return details if details else None
 
         for li in pd_content.find_all('li'):
             spans = li.find_all('span', recursive=False)
             if len(spans) == 2:
                 label = spans[0].get_text(strip=True).replace(" ", "_").lower()
                 value = spans[1].get_text(strip=True)
-                if 'flag' in spans[1].get('class', []):
+                
+                # Check for flag class to extract country
+                span_classes = spans[1].get('class', [])
+                if 'flag' in span_classes:
                     value = spans[1].get_text(strip=True).split(' ', 1)[0]
-                    flag_ref = spans[1].find('use').get('href')
-                    if '#flag-' in flag_ref:
-                        country_code = flag_ref.split('#flag-')[1].upper()
-                        details['country_code'] = country_code
+                    # Extract country code from SVG use element
+                    flag_use = spans[1].find('use')
+                    if flag_use:
+                        flag_ref = flag_use.get('href')
+                        if flag_ref and '#flag-' in flag_ref:
+                            country_code = flag_ref.split('#flag-')[1].upper()
+                            details['country_code'] = country_code
+                
                 details[label] = value
-            elif len(spans) == 2 and "social" in spans[1].decode():
-                social_links = {}
-                for a in spans[1].find_all('a', href=True):
-                    platform = a.find('span', class_='hide-text')
-                    if platform:
-                        social_links[platform.get_text(strip=True).lower()] = a['href']
-                details['social_links'] = social_links
+            elif len(spans) == 2:
+                # Check for social links
+                span_html = str(spans[1])
+                if "social" in span_html:
+                    social_links = {}
+                    for a in spans[1].find_all('a', href=True):
+                        platform = a.find('span', class_='hide-text')
+                        if platform:
+                            social_links[platform.get_text(strip=True).lower()] = a['href']
+                    if social_links:
+                        details['social_links'] = social_links
             elif li.find('a', href=True) and not spans:
                 a = li.find('a', href=True)
-                platform = a.find('span', class_='hide-text')
-                if platform:
-                    details.setdefault('social_links', {})[platform.get_text(strip=True).lower()] = a['href']
+                if a:
+                    platform = a.find('span', class_='hide-text')
+                    if platform:
+                        if 'social_links' not in details:
+                            details['social_links'] = {}
+                        details['social_links'][platform.get_text(strip=True).lower()] = a['href']
             elif len(spans) == 1:
                 label = spans[0].get_text(strip=True).replace(" ", "_").lower()
                 details[label] = ""
-
+        
+        # Extract ATP ID and name from URL
         url_parts = player_url.strip('/').split('/')
         if len(url_parts) >= 5:
             details['atp_name'] = url_parts[-3]
             details['atp_id'] = url_parts[-2]
+        
         return details
+    
     except Exception as e:
         logger.error(f"Failed to scrape player details from {player_url}: {e}")
         return None
+    
     finally:
         await asession.close()
 
@@ -93,14 +126,14 @@ def prioritize_players(rankings_df: pd.DataFrame, n: int = 100, exclude_ids=None
         rankings_df (pd.DataFrame): DataFrame with 'atp_id', 'ranking_date', and 'rank' columns
         n (int): Number of players to return
         exclude_ids (set): Set of atp_ids to exclude from prioritization
-        
+    
     Returns:
         list: List of atp_ids in priority order
     """
     # Filter out excluded IDs if provided
     if exclude_ids:
         rankings_df = rankings_df[~rankings_df['atp_id'].isin(exclude_ids)].copy()
-
+    
     # Convert rank to integer by removing 'T' for tied ranks
     rankings_df['rank'] = rankings_df['Rank'].astype(str).str.replace('T', '').astype(int)
     
@@ -118,7 +151,7 @@ def prioritize_players(rankings_df: pd.DataFrame, n: int = 100, exclude_ids=None
 def update_players_from_rankings(
     rankings_base_dir: str = "data/raw/rankings",
     players_parquet: str = "data/raw/players/players_raw.parquet",
-    max_players: int = None
+    max_players: Optional[int] = None
 ):
     """
     Update the players_raw.parquet with new player URLs found in rankings files.
@@ -128,26 +161,29 @@ def update_players_from_rankings(
         rankings_base_dir (str): Directory containing raw ranking CSV files.
         players_parquet (str): Path to the players parquet file.
         max_players (int or None): Maximum number of players to scrape. If None, scrape all new players.
-        
+    
     Returns:
         int: Number of remaining players without data after scraping.
     """
     logger.info("Updating players from rankings with prioritization and limit...")
-
+    
     # Gather all ranking files
     ranking_files = glob.glob(os.path.join(rankings_base_dir, "*", "atp_rankings_*_raw.csv"))
+    
     rankings_list = []
     for f in ranking_files:
         df = pd.read_csv(f)
         rankings_list.append(df)
+    
     if not rankings_list:
         logger.warning("No ranking files found.")
         return 0
+    
     rankings_df = pd.concat(rankings_list, ignore_index=True)
     
     # Ensure ranking_date is datetime
     rankings_df['ranking_date'] = pd.to_datetime(rankings_df['ranking_date'])
-
+    
     # Load existing players first to check for duplicates
     if os.path.exists(players_parquet):
         players_df = pd.read_parquet(players_parquet)
@@ -208,7 +244,6 @@ def update_players_from_rankings(
         
         # Ensure directory exists
         os.makedirs(os.path.dirname(players_parquet), exist_ok=True)
-        
         combined.to_parquet(players_parquet, index=False)
         logger.info(f"Appended {len(new_df)} new players to {players_parquet}")
     else:
@@ -219,6 +254,7 @@ def update_players_from_rankings(
     all_player_ids = set(rankings_df['atp_id'].dropna().unique())
     known_ids_updated = set(combined['atp_id'].dropna().unique()) if not combined.empty else known_ids
     remaining = len(all_player_ids - known_ids_updated)
+    
     logger.info(f"Remaining players without data: {remaining}")
     
     return remaining
